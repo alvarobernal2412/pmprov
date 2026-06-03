@@ -25,18 +25,15 @@ class AnalysisBranch(BaseModel):
         ...,
         description="FK → AnalysisHistory.history_id – the history this branch belongs to.",
     )
+    name: str = Field(
+        "main",
+        description="Human-readable branch label (e.g., 'main', 'experiment-1'). Defaults to 'main'.",
+    )
     starts_at_state_id: str = Field(
         ...,
         description=(
             "FK → AnalysisState.state_id – the state at which this branch diverges "
             "(i.e., its common origin with the parent branch)."
-        ),
-    )
-    active_state_id: Optional[str] = Field(
-        None,
-        description=(
-            "FK → AnalysisState.state_id – the most recent (tip) state of this branch. "
-            "None if the branch has no steps yet beyond its start state."
         ),
     )
 
@@ -58,6 +55,14 @@ class AnalysisHistory(BaseModel):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp at which this history was initiated.",
+    )
+    active_state_id: Optional[str] = Field(
+        None,
+        description=(
+            "FK → AnalysisState.state_id – the most recently produced state in this "
+            "history, regardless of branch.  Updated after every step so it always "
+            "reflects where the analyst currently is."
+        ),
     )
 
 

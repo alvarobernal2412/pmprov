@@ -51,16 +51,33 @@ def _dataframe_delta(pre: dict, post: dict, mutation_type: str) -> dict:
         for col in pre_cols & post_cols
         if pre_dtypes.get(col) != post_dtypes.get(col)
     }
+    cols_added = sorted(post_cols - pre_cols)
+    cols_removed = sorted(pre_cols - post_cols)
+    rows_delta = post_rows - pre_rows
+
+    if cols_added and not cols_removed and not dtype_changes:
+        modification_type = "addition"
+    elif cols_removed and not cols_added and not dtype_changes:
+        modification_type = "removal"
+    elif dtype_changes and not cols_added and not cols_removed:
+        modification_type = "casting"
+    elif rows_delta > 0 and not cols_added and not cols_removed and not dtype_changes:
+        modification_type = "addition"
+    elif rows_delta < 0 and not cols_added and not cols_removed and not dtype_changes:
+        modification_type = "removal"
+    else:
+        modification_type = "other"
 
     return {
         "kind": "dataframe",
         "mutation_type": mutation_type,
-        "columns_added": sorted(post_cols - pre_cols),
-        "columns_removed": sorted(pre_cols - post_cols),
+        "modification_type": modification_type,
+        "columns_added": cols_added,
+        "columns_removed": cols_removed,
         "dtype_changes": dtype_changes,
         "rows_before": pre_rows,
         "rows_after": post_rows,
-        "rows_delta": post_rows - pre_rows,
+        "rows_delta": rows_delta,
     }
 
 

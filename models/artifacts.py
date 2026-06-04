@@ -17,10 +17,14 @@ class ArtifactType(str, Enum):
 
 class ModificationType(str, Enum):
     """Analyst-facing classification of what a Delta describes."""
-    ADDITION = "addition"    # new rows or columns added
-    REMOVAL = "removal"      # rows or columns removed
-    RENAMING = "renaming"    # columns renamed
-    CASTING = "casting"      # column dtype changed
+    ADDITION = "addition"          # new rows or columns added
+    REMOVAL = "removal"            # rows or columns removed
+    RENAMING = "renaming"          # columns renamed
+    CASTING = "casting"            # column dtype changed
+    NORMALIZATION = "normalization"  # values scaled or standardised (e.g. min-max, z-score)
+    ENRICHMENT = "enrichment"      # new information derived from external or computed sources
+    OBFUSCATION = "obfuscation"    # values masked, hashed, or anonymised
+    RECALCULATION = "recalculation"  # existing values recomputed (e.g. updated formula or parameter)
     OTHER = "other"
 
 

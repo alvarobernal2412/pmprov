@@ -5,31 +5,31 @@ description = "Analytic provenance tracking middleware for exploratory process m
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "pandas>=3.0.3",
-    "pyarrow>=24.0.0",
-    "pydantic>=2.13.4",
+    "pandas==3.0.3",
+    "pyarrow==24.0.0",
+    "pydantic==2.13.4",
 ]
 
 [project.optional-dependencies]
 # Preferred storage backend (also enables native Parquet querying)
-duckdb = ["duckdb>=1.0"]
+duckdb = ["duckdb==1.5.3"]
 # Required for pandas DataFrame → Parquet serialisation
-parquet = ["pyarrow>=15.0"]
+parquet = ["pyarrow==24.0.0"]
 # In-memory graph support for load_graph() → networkx; matplotlib for show_graph()
 graph = [
-    "networkx>=3.0",
-    "matplotlib>=3.8",
+    "networkx==3.6.1",
+    "matplotlib==3.10.9",
 ]
 # Interactive provenance widget for show_graph_widget() in Jupyter
 widgets = [
-    "ipywidgets>=8.0",
+    "ipywidgets==8.1.8",
 ]
 # Install everything at once: uv pip install -e ".[full]"
-full = ["duckdb>=1.0", "pyarrow>=15.0", "networkx>=3.0", "matplotlib>=3.8", "ipywidgets>=8.0"]
+full = ["duckdb==1.5.3", "pyarrow==24.0.0", "networkx==3.6.1", "matplotlib==3.10.9", "ipywidgets==8.1.8"]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3",
+    "pytest==9.0.3",
 ]
 
 [tool.setuptools.packages.find]

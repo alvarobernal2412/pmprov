@@ -628,24 +628,24 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },
-    { name = "duckdb", marker = "extra == 'full'", specifier = ">=1.0" },
-    { name = "ipywidgets", marker = "extra == 'full'", specifier = ">=8.0" },
-    { name = "ipywidgets", marker = "extra == 'widgets'", specifier = ">=8.0" },
-    { name = "matplotlib", marker = "extra == 'full'", specifier = ">=3.8" },
-    { name = "matplotlib", marker = "extra == 'graph'", specifier = ">=3.8" },
-    { name = "networkx", marker = "extra == 'full'", specifier = ">=3.0" },
-    { name = "networkx", marker = "extra == 'graph'", specifier = ">=3.0" },
-    { name = "pandas", specifier = ">=3.0.3" },
-    { name = "pyarrow", specifier = ">=24.0.0" },
-    { name = "pyarrow", marker = "extra == 'full'", specifier = ">=15.0" },
-    { name = "pyarrow", marker = "extra == 'parquet'", specifier = ">=15.0" },
-    { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "duckdb", marker = "extra == 'duckdb'", specifier = "==1.5.3" },
+    { name = "duckdb", marker = "extra == 'full'", specifier = "==1.5.3" },
+    { name = "ipywidgets", marker = "extra == 'full'", specifier = "==8.1.8" },
+    { name = "ipywidgets", marker = "extra == 'widgets'", specifier = "==8.1.8" },
+    { name = "matplotlib", marker = "extra == 'full'", specifier = "==3.10.9" },
+    { name = "matplotlib", marker = "extra == 'graph'", specifier = "==3.10.9" },
+    { name = "networkx", marker = "extra == 'full'", specifier = "==3.6.1" },
+    { name = "networkx", marker = "extra == 'graph'", specifier = "==3.6.1" },
+    { name = "pandas", specifier = "==3.0.3" },
+    { name = "pyarrow", specifier = "==24.0.0" },
+    { name = "pyarrow", marker = "extra == 'full'", specifier = "==24.0.0" },
+    { name = "pyarrow", marker = "extra == 'parquet'", specifier = "==24.0.0" },
+    { name = "pydantic", specifier = "==2.13.4" },
 ]
 provides-extras = ["duckdb", "parquet", "graph", "widgets", "full"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.3" }]
+dev = [{ name = "pytest", specifier = "==9.0.3" }]
 
 [[package]]
 name = "prompt-toolkit"

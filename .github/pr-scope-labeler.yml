@@ -1,0 +1,46 @@
+🧪 Tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
+
+📝 Documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - README.md
+          - CLAUDE.md
+          - docs/**
+
+💻 Source:
+  - changed-files:
+      - any-glob-to-any-file:
+          - models/**
+          - tracker/**
+          - examples/**
+
+⚙️ Configuration:
+  - changed-files:
+      - any-glob-to-any-file:
+          - pyproject.toml
+          - .gitignore
+          - .python-version
+
+📦 Dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - pyproject.toml
+          - uv.lock
+
+🚀 CI/CD:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
+          - .github/renovate.json
+          - .github/pr-scope-labeler.yml
+
+🏠 Github Configuration:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/ISSUE_TEMPLATE/**
+          - .github/CODEOWNERS
+          - .github/labels.yml
+          - .devcontainer/**

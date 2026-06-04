@@ -31,3 +31,6 @@ full = ["duckdb>=1.0", "pyarrow>=15.0", "networkx>=3.0", "matplotlib>=3.8", "ipy
 dev = [
     "pytest>=9.0.3",
 ]
+
+[tool.setuptools.packages.find]
+include = ["models*", "tracker*"]

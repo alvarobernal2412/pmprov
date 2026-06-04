@@ -1,0 +1,13 @@
+{
+  "name": "pmprov Codespace",
+  "image": "mcr.microsoft.com/devcontainers/base:debian",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.13"
+    }
+  },
+  "postCreateCommand": "pip install uv && uv pip install -e '.[full]' --system",
+  "hostRequirements": {
+    "cpus": 4
+  }
+}

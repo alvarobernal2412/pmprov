@@ -1,0 +1,60 @@
+- name: 👀 Feature Requested
+  description: Request for a feature
+  color: 07D90A
+- name: ignore-for-release
+  description: Ignore pull request for a new release
+  color: 9C28FC
+- name: ✅ To-do
+  description: Action we need to perform at some moment
+  color: 82FC28
+- name: 💻 Source
+  description: Indicates the scope is related to the own service logic
+  color: FDC720
+- name: 🧪 Tests
+  description: Indicates the scope is related to the tests
+  color: 088E26
+- name: ⚙️ Configuration
+  description: Indicates the scope is related to the configuration
+  color: BDBDBD
+- name: 🛠️ Build
+  description: Indicates the change is related to the build
+  color: 0FD4DA
+- name: 🚀 CI/CD
+  description: Indicates the change is related to CI/CD workflows
+  color: FF4D4D
+- name: 🏠 Github Configuration
+  description: Indicates the change is related to github settings
+  color: 555555
+- name: 🚀 Feature
+  description: Feature added in the PR
+  color: F10505
+- name: 🐞 Bug
+  description: Bug identified
+  color: F4D03F
+- name: 🕵🏻 Fix
+  description: Fix applied in the PR
+  color: F4D03F
+- name: ⚠️ Breaking Change
+  description: Breaking change in the PR
+  color: F1F800
+- name: 📦 Dependencies
+  description: Pull requests that update a dependency file
+  color: 95A5A6
+- name: 🔒 Security
+  description: Pull requests that update a security dependency
+  color: 95A5A6
+- name: 📝 Documentation
+  description: Improvements or additions to documentation
+  color: 228AFF
+- name: 🤦‍ Duplicate
+  description: This issue or pull request already exists
+  color: 17202A
+- name: 😎 size/m
+  description: Pull request size M
+  color: F1C40F
+- name: 😖 size/l
+  description: Pull request size L
+  color: F39C12
+- name: 🤯 size/xl
+  description: Pull request size XL
+  color: E67E22

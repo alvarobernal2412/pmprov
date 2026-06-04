@@ -39,13 +39,17 @@ OMIT_FUNCTIONS: set[str] = {
     # IPython / Jupyter display helpers
     "display",
     "clear_output",
-    # ProvTrack's own inspection methods (avoid self-tracking)
+    # ProvTrack's own inspection / configuration methods (avoid self-tracking)
     "show_graph",
     "show_graph_widget",
     "list_states",
     "load_graph",
     "to_networkx",
     "checkout",
+    "operation_type",
+    "omit_functions",
+    "init_jupyter",
+    "init_marimo",
 }
 
 

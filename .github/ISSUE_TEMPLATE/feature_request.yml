@@ -1,0 +1,46 @@
+name: 👀 Feature Request
+description: Propose a new capability or improvement
+labels: ["👀 Feature Requested"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a feature request, please check that it aligns with the research scope described in [CLAUDE.md](../CLAUDE.md) and [CONTRIBUTING.md](../CONTRIBUTING.md). The maintainer will discuss feasibility before implementation begins.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What research question or analyst workflow does this address? Why is it needed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe what you'd like to see. Be as concrete as possible — API sketches or pseudocode are welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you considered any other approaches? Why do they fall short?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Provenance capture (tracker/)
+        - Domain model (models/)
+        - Storage / querying
+        - Visualisation
+        - Notebook integration
+        - Testing
+        - Documentation
+        - Other
+    validations:
+      required: true

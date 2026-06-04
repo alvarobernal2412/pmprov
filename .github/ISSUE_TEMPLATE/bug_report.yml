@@ -1,0 +1,67 @@
+name: 🐞 Bug Report
+description: Something in the middleware behaves unexpectedly
+labels: ["🐞 Bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as you can — a minimal reproducible example is the single most helpful thing you can provide.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - AST rewriter (tracker/ast_rewriter.py)
+        - Provenance capture / trace_step (tracker/runtime.py)
+        - Snapshot / delta (tracker/snapshot_engine.py, delta_calculator.py)
+        - Storage (tracker/storage.py)
+        - Visualisation (tracker/visualizations.py)
+        - Jupyter integration (init_jupyter)
+        - Marimo integration (init_marimo)
+        - Domain models (models/)
+        - Other / unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the unexpected behaviour clearly and concisely.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproducible example
+      description: Paste the smallest notebook cell sequence (or Python script) that triggers the bug.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Error output / traceback
+      render: text
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Python version, pmprov version (or commit), operating system, Jupyter/Marimo version if relevant.
+      placeholder: |
+        - Python: 3.13.x
+        - pmprov: commit abc1234
+        - OS: Ubuntu 22.04
+        - Jupyter: 7.x

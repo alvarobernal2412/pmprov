@@ -459,6 +459,104 @@ def _list_states(self: "RuntimeTracker") -> Any:
 
 
 # ---------------------------------------------------------------------------
+# show_artifact_lifecycle
+# ---------------------------------------------------------------------------
+
+def _show_artifact_lifecycle(
+    self: "RuntimeTracker",
+    state_id: str,
+    save_path: Optional[str] = None,
+) -> None:
+    """
+    Render the lifecycle of the artifact associated with state_id as a
+    matplotlib figure. Each node is an ArtifactState; edges show the
+    transformation and delta summary.
+
+    Falls back to a plain-text table when matplotlib or networkx are absent.
+
+    Parameters
+    ----------
+    state_id:
+        Any state_id with an associated artifact. Use rt.list_states() to find IDs.
+    save_path:
+        Optional path to save the figure as SVG.
+    """
+    lifecycle = self.storage.load_artifact_lifecycle(state_id)
+
+    if not lifecycle:
+        print(f"No artifact lifecycle found for state {state_id[:8]}.")
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+        import networkx as nx
+    except ImportError:
+        print(f"Artifact lifecycle for state {state_id[:8]}:")
+        print(f"{'Timestamp':<22} {'func_name':<20} {'modification':<18} rows_delta")
+        print("-" * 75)
+        for entry in lifecycle:
+            ts = (entry.get("timestamp") or "")[:19]
+            fn = entry.get("func_name") or "import"
+            mt = entry.get("modification_type") or "-"
+            rd = entry.get("rows_delta")
+            rd_str = f"{rd:+d}" if rd is not None else "-"
+            print(f"{ts:<22} {fn:<20} {mt:<18} {rd_str}")
+        return
+
+    G = nx.DiGraph()
+    for i, entry in enumerate(lifecycle):
+        sid = entry["state_id"]
+        ts = (entry.get("timestamp") or "")
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(ts)
+            label = f"{dt.strftime('%H:%M:%S')}\n{sid[:8]}"
+        except Exception:
+            label = sid[:8]
+        G.add_node(sid, label=label, entry=entry)
+        if i > 0:
+            prev = lifecycle[i - 1]
+            mt = entry.get("modification_type") or "?"
+            rd = entry.get("rows_delta")
+            rd_str = f" ({rd:+d} rows)" if rd is not None else ""
+            cols_added = entry.get("columns_added") or []
+            fn = entry.get("func_name") or "?"
+            edge_label = f"{fn}\n{mt}{rd_str}"
+            if cols_added:
+                names = ", ".join(str(c) for c in cols_added[:3])
+                suffix = f"+{len(cols_added)-3} more" if len(cols_added) > 3 else ""
+                edge_label += f"\n+{names}{suffix}"
+            G.add_edge(prev["state_id"], sid, label=edge_label)
+
+    try:
+        from networkx.drawing.nx_pydot import graphviz_layout
+        pos = graphviz_layout(G, prog="dot")
+    except Exception:
+        pos = {n: (0, -i * 2) for i, n in enumerate(G.nodes())}
+
+    node_labels = {n: G.nodes[n]["label"] for n in G.nodes()}
+    edge_labels = {(u, v): G[u][v]["label"] for u, v in G.edges()}
+
+    n_nodes = max(G.number_of_nodes(), 1)
+    fig, ax = plt.subplots(figsize=(8, max(4, n_nodes * 1.5)))
+    nx.draw_networkx_nodes(G, pos, ax=ax, node_color="#fce8b2", node_size=1200, edgecolors="#f9a825")
+    nx.draw_networkx_edges(G, pos, ax=ax, edge_color="#5f6368", arrows=True, arrowsize=15)
+    nx.draw_networkx_labels(G, pos, node_labels, ax=ax, font_size=7)
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, ax=ax, font_size=6, rotate=False)
+    ax.axis("off")
+    ax.set_title(f"Artifact Lifecycle — anchor state {state_id[:8]}", fontsize=9)
+
+    if save_path:
+        from pathlib import Path
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, format="svg", bbox_inches="tight")
+
+    plt.tight_layout()
+    plt.show()
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Patch onto RuntimeTracker
 # ---------------------------------------------------------------------------
 
@@ -468,3 +566,4 @@ RuntimeTracker.show_graph = _show_graph
 RuntimeTracker.show_graph_widget = _show_graph_widget
 RuntimeTracker._render_graph_image = _render_graph_image
 RuntimeTracker.list_states = _list_states
+RuntimeTracker.show_artifact_lifecycle = _show_artifact_lifecycle

@@ -182,6 +182,11 @@ class RuntimeTracker:
         # Branch-divergence detection: func_name → list of execution records
         self._cell_executions: dict[str, list[dict]] = {}
 
+        # Abstraction registry: name → callable(df, state_id) -> Any
+        self._abstraction_registry: dict[str, Any] = {}
+        # Computed abstraction results: state_id → {name → value}
+        self._abstraction_cache: dict[str, dict[str, Any]] = {}
+
         # Maps func_name → callable, populated by trace_step for replay support.
         self._replay_func_registry: dict[str, Any] = {}
 

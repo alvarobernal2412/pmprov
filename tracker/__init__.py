@@ -41,6 +41,8 @@ from tracker.operation_registry import operation_type, step_category
 from tracker.runtime import RuntimeTracker
 from tracker.storage import StorageBackend
 import tracker.visualizations  # noqa: F401 — patches show_graph / show_graph_widget onto RuntimeTracker
+import tracker.introspection  # noqa: F401 — patches describe_state / list_branches onto RuntimeTracker
+import tracker.comparison  # noqa: F401 — patches compare_states / compare_histories onto RuntimeTracker
 
 
 def omit_functions(*names: str) -> None:

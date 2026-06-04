@@ -191,21 +191,20 @@ class RuntimeTracker:
             name=branch_name,
             starts_at_state_id=root_state_id,
         )
-        root_state = AnalysisState(
-            state_id=root_state_id,
-            branch_id=self._branch.branch_id,
-        )
         self._root_state_id: str = root_state_id
         self._current_state_id: str = root_state_id
 
-        # Block until the root node is committed so steps never race it.
-        self.storage._executor.submit(
-            self.storage._write_node,
-            root_state_id,
-            self._session_metadata(root_state.model_dump(mode="json")),
-            None,
-            self._history.history_id,
-        ).result()
+        # Persist session-level records synchronously so trace_step never races them.
+        self.storage._executor.submit(self.storage._write_history, self._history).result()
+        self.storage._executor.submit(self.storage._write_branch, self._branch).result()
+        root_state = AnalysisState(
+            state_id=root_state_id,
+            history_id=self._history.history_id,
+            branch_id=self._branch.branch_id,
+        )
+        self.storage._executor.submit(self.storage._write_state, root_state).result()
+        self.storage._executor.submit(self.storage._write_agent, self._agent, self._history.history_id).result()
+        self.storage._executor.submit(self.storage._write_env, self._env, self._history.history_id).result()
 
     # ------------------------------------------------------------------
     # Public API – invoked by AST-rewritten cells
@@ -308,12 +307,6 @@ class RuntimeTracker:
             env_id=self._env.env_id,
             operation_id=operation.operation_id,
         )
-        output_state = AnalysisState(
-            state_id=output_state_id,
-            branch_id=self._branch.branch_id,
-            produced_by_step_id=step_id,
-            derived_from_state_id=input_state_id,
-        )
 
         # ---- 7. Artifact persistence -----------------------------------------
         artifact_records: dict = {}
@@ -322,37 +315,33 @@ class RuntimeTracker:
             artifact_path = self.storage.save_artifact(output_state_id, output)
             if artifact_path:
                 try:
-                    artifact, artifact_state = self._build_artifact_records(
+                    artifact_records = self._build_artifact_records(
                         output, output_state_id, artifact_path
                     )
-                    artifact_records = {
-                        "artifact": artifact.model_dump(mode="json") if artifact else None,
-                        "artifact_state": artifact_state.model_dump(mode="json"),
-                    }
                 except Exception:
                     pass
 
-        # ---- 8. Persist node + edge ------------------------------------------
-        metadata: dict = {
-            "session_id": self.session_id,
-            "func_name": func_name,
-            "raw_line": raw_line,
-            "step": step.model_dump(mode="json"),
-            "output_state": output_state.model_dump(mode="json"),
-            "operation": operation.model_dump(mode="json"),
-            "operation_type": op_type.model_dump(mode="json"),
-            "pre_snapshots": pre_snaps,
-            "post_snapshot": post_snap,
-            "delta": delta,
-            "param_values": param_values,
-            "param_fingerprint": fp,
-            "agent": self._agent.model_dump(mode="json"),
-            "env": self._env.model_dump(mode="json"),
-            **artifact_records,
-        }
-
-        self.storage.save_node_async(output_state_id, metadata, artifact_path, self._history.history_id)
-        self.storage.save_edge_async(input_state_id, output_state_id, func_name, self._history.history_id)
+        # ---- 8. Persist all entities ------------------------------------------------
+        output_state = AnalysisState(
+            state_id=output_state_id,
+            history_id=self._history.history_id,
+            branch_id=self._branch.branch_id,
+            produced_by_step_id=step_id,
+            derived_from_state_id=input_state_id,
+        )
+        self.storage.save_state_async(output_state)
+        self.storage.save_step_async(step, func_name, raw_line, fp, self._history.history_id)
+        self.storage.save_operation_async(operation, op_type)
+        if param_values:
+            self.storage.save_param_values_async(param_values)
+        if delta:
+            self.storage.save_delta_async(delta, step_id)
+        if artifact_path:
+            artifact_state_obj = artifact_records.get("artifact_state_obj")
+            if artifact_state_obj:
+                self.storage.save_artifact_records_async(
+                    artifact_records.get("artifact_obj"), artifact_state_obj, self._history.history_id
+                )
 
         # Record this execution for future divergence checks on this func.
         self._cell_executions.setdefault(func_name, []).append({
@@ -362,15 +351,9 @@ class RuntimeTracker:
             "branch_id": self._branch.branch_id,
         })
 
-        # Advance the history's active state and persist the updated session root.
         self._current_state_id = output_state_id
         self._history.active_state_id = output_state_id
-        self.storage.save_node_async(
-            self._root_state_id,
-            self._session_metadata(),
-            None,
-            self._history.history_id,
-        )
+        self.storage.update_history_active_state_async(self._history.history_id, output_state_id)
 
         return output
 
@@ -401,31 +384,20 @@ class RuntimeTracker:
         branch = self._create_branch(starts_at=state_id, name=name)
         # active_state_id reflects where the analyst is now — the checkout point.
         self._history.active_state_id = state_id
-        self.storage.save_node_async(self._root_state_id, self._session_metadata(), None, self._history.history_id)
+        self.storage.update_history_active_state_async(self._history.history_id, state_id)
         return branch
+
+    def create_pipeline(self, name: str, step_ids: list[str]) -> str:
+        """Record a named Pipeline covering the given step_ids in order. Returns pipeline_id."""
+        pipeline_id = _uid()
+        self.storage.save_pipeline_async(pipeline_id, self._history.history_id, name)
+        fragment_id = _uid()
+        self.storage.save_fragment_async(fragment_id, pipeline_id, step_ids, position=0)
+        return pipeline_id
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
-    def _session_metadata(self, root_state_dump: Optional[dict] = None) -> dict:
-        """
-        Build the metadata dict for the session-root node.
-
-        Called at init (with the freshly-created root state) and after every
-        step / checkout (without it, reusing the already-stored root state).
-        The ``history`` entry is always re-serialised so ``active_state_id``
-        stays current.
-        """
-        return {
-            "session_id": self.session_id,
-            "node_type": "session_root",
-            "history": self._history.model_dump(mode="json"),
-            "branch": self._branch.model_dump(mode="json"),
-            **({"root_state": root_state_dump} if root_state_dump is not None else {}),
-            "agent": self._agent.model_dump(mode="json"),
-            "env": self._env.model_dump(mode="json"),
-        }
 
     def _detect_and_apply_branch(self, func_name: str, fp: str) -> str:
         """
@@ -486,16 +458,7 @@ class RuntimeTracker:
         )
         self._branch = new_branch
         self._current_state_id = starts_at
-
-        branch_metadata: dict = {
-            "session_id": self.session_id,
-            "node_type": "branch",
-            "branch": new_branch.model_dump(mode="json"),
-        }
-        # Use a non-state node_id so branch records don't collide with state nodes.
-        self.storage.save_node_async(
-            f"branch-{new_branch.branch_id}", branch_metadata, None, self._history.history_id
-        )
+        self.storage.save_branch_async(new_branch)
         return new_branch
 
     def _get_or_create_operation(
@@ -527,12 +490,12 @@ class RuntimeTracker:
         obj: Any,
         output_state_id: str,
         artifact_path: str,
-    ) -> tuple[Optional[Artifact], ArtifactState]:
+    ) -> dict:
         """
         Build Artifact + ArtifactState Pydantic models for a DataFrame output.
 
-        Returns (artifact, artifact_state) where *artifact* is None when the
-        object was already seen in this session (Artifact record already exists).
+        Returns a dict with keys ``artifact_obj`` (None if already seen) and
+        ``artifact_state_obj``.
         Side effects: updates _artifact_registry and _artifact_state_registry.
         """
         obj_python_id = id(obj)
@@ -559,7 +522,7 @@ class RuntimeTracker:
             size_bytes=size_bytes,
         )
         self._artifact_state_registry[obj_python_id] = artifact_state.artifact_state_id
-        return artifact, artifact_state
+        return {"artifact_obj": artifact, "artifact_state_obj": artifact_state}
 
     def _make_param_value(self, param_id: str, step_id: str, value: Any):
         """Map a runtime Python value to the appropriate ParameterValue subclass."""

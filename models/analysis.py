@@ -59,6 +59,10 @@ class AnalysisState(BaseModel):
     """
 
     state_id: str = Field(..., description="Unique identifier for this analysis state.")
+    history_id: str = Field(
+        ...,
+        description="FK → AnalysisHistory.history_id – the session this state belongs to.",
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp at which this state was created.",

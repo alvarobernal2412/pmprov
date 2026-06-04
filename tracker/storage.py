@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS analysis_states (state_id VARCHAR PRIMARY KEY, histor
 CREATE TABLE IF NOT EXISTS agents (agent_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, agent_type VARCHAR NOT NULL, username VARCHAR);
 CREATE TABLE IF NOT EXISTS runtime_environments (env_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, tool_version VARCHAR NOT NULL, library_versions VARCHAR NOT NULL, runtime VARCHAR);
 CREATE TABLE IF NOT EXISTS operation_types (type_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL);
-CREATE TABLE IF NOT EXISTS operations (operation_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL, operation_type_id VARCHAR NOT NULL);
+CREATE TABLE IF NOT EXISTS operations (operation_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL, operation_type_id VARCHAR NOT NULL, step_category_id VARCHAR);
 CREATE TABLE IF NOT EXISTS analysis_steps (step_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, input_state_id VARCHAR NOT NULL, output_state_id VARCHAR NOT NULL, agent_id VARCHAR NOT NULL, env_id VARCHAR NOT NULL, operation_id VARCHAR NOT NULL, func_name VARCHAR NOT NULL, raw_line VARCHAR, param_fingerprint VARCHAR, timestamp VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS parameter_values (pv_id VARCHAR PRIMARY KEY, step_id VARCHAR NOT NULL, param_id VARCHAR NOT NULL, value_type VARCHAR NOT NULL, value_json VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS artifacts (artifact_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, name VARCHAR NOT NULL, artifact_type VARCHAR NOT NULL);
@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS artifact_states (artifact_state_id VARCHAR PRIMARY KE
 CREATE TABLE IF NOT EXISTS deltas (delta_id VARCHAR PRIMARY KEY, step_id VARCHAR NOT NULL, kind VARCHAR NOT NULL, mutation_type VARCHAR, modification_type VARCHAR, rows_delta INTEGER, columns_added VARCHAR, columns_removed VARCHAR, dtype_changes VARCHAR);
 CREATE TABLE IF NOT EXISTS pipelines (pipeline_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, name VARCHAR NOT NULL, created_at VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS pipeline_fragments (fragment_id VARCHAR PRIMARY KEY, pipeline_id VARCHAR NOT NULL, step_ids VARCHAR NOT NULL, position INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS step_categories (category_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL UNIQUE);
 """
 
 
@@ -105,6 +106,12 @@ class StorageBackend:
                 if stmt:
                     con.execute(stmt)
             _commit(con)
+            # Migration: add step_category_id column to operations if absent
+            try:
+                con.execute("ALTER TABLE operations ADD COLUMN step_category_id VARCHAR")
+                _commit(con)
+            except Exception:
+                pass
         finally:
             con.close()
 
@@ -126,6 +133,9 @@ class StorageBackend:
 
     def save_operation_async(self, op, op_type) -> None:
         self._executor.submit(self._write_operation, op, op_type)
+
+    def save_step_category_async(self, category) -> None:
+        self._executor.submit(self._write_step_category, category)
 
     def save_agent_async(self, agent, history_id) -> None:
         self._executor.submit(self._write_agent, agent, history_id)
@@ -198,6 +208,232 @@ class StorageBackend:
                       for r in steps],
         }
 
+    def load_state_detail(self, state_id: str) -> dict:
+        """
+        Return full metadata for a state: step, operation type, agent, environment,
+        parameter values, and delta. Returns {} when state_id is not found.
+        """
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute("""
+                SELECT s.step_id, s.func_name, s.raw_line, s.timestamp,
+                       s.param_fingerprint,
+                       o.name AS op_name, ot.name AS op_type_name,
+                       COALESCE(sc.name, '') AS category_name,
+                       ag.agent_type, ag.username,
+                       e.tool_version, e.library_versions, e.runtime,
+                       b.name AS branch_name
+                FROM analysis_states st
+                JOIN analysis_steps s ON s.output_state_id = st.state_id
+                JOIN operations o ON o.operation_id = s.operation_id
+                JOIN operation_types ot ON ot.type_id = o.operation_type_id
+                LEFT JOIN step_categories sc ON sc.category_id = o.step_category_id
+                JOIN agents ag ON ag.agent_id = s.agent_id
+                JOIN runtime_environments e ON e.env_id = s.env_id
+                JOIN analysis_branches b ON b.branch_id = st.branch_id
+                WHERE st.state_id = ?
+            """, _p(state_id)).fetchone()
+
+            if row is None:
+                return {}
+
+            (step_id, func_name, raw_line, timestamp, param_fingerprint,
+             op_name, op_type_name, category_name, agent_type, username,
+             tool_version, library_versions_json, runtime, branch_name) = row
+
+            pvs = con.execute(
+                "SELECT param_id, value_type, value_json FROM parameter_values WHERE step_id = ?",
+                _p(step_id),
+            ).fetchall()
+
+            delta_row = con.execute(
+                """SELECT kind, mutation_type, modification_type, rows_delta,
+                          columns_added, columns_removed, dtype_changes
+                   FROM deltas WHERE step_id = ?""",
+                _p(step_id),
+            ).fetchone()
+
+        finally:
+            con.close()
+
+        params = [
+            {"param_id": r[0], "value_type": r[1], "value": json.loads(r[2])}
+            for r in pvs
+        ]
+
+        delta = None
+        if delta_row:
+            delta = {
+                "kind": delta_row[0],
+                "mutation_type": delta_row[1],
+                "modification_type": delta_row[2],
+                "rows_delta": delta_row[3],
+                "columns_added": json.loads(delta_row[4] or "[]"),
+                "columns_removed": json.loads(delta_row[5] or "[]"),
+                "dtype_changes": json.loads(delta_row[6] or "{}"),
+            }
+
+        return {
+            "state_id": state_id,
+            "step_id": step_id,
+            "timestamp": timestamp,
+            "branch_name": branch_name,
+            "func_name": func_name,
+            "raw_line": raw_line,
+            "param_fingerprint": param_fingerprint,
+            "operation": {"name": op_name, "type": op_type_name, "category": category_name or None},
+            "agent": {"agent_type": agent_type, "username": username},
+            "environment": {
+                "tool_version": tool_version,
+                "library_versions": json.loads(library_versions_json or "{}"),
+                "runtime": runtime,
+            },
+            "params": params,
+            "delta": delta,
+        }
+
+    def load_branches(self, history_id: str) -> list[dict]:
+        """
+        Return all branches for a history with step counts and divergence points.
+        divergence_point_id is None for the root branch (starts_at has no producing step).
+        """
+        con = self._connect(read_only=True)
+        try:
+            rows = con.execute("""
+                SELECT b.branch_id, b.name, b.starts_at_state_id,
+                       COUNT(DISTINCT s.step_id) AS step_count,
+                       st.produced_by_step_id
+                FROM analysis_branches b
+                LEFT JOIN analysis_states ast ON ast.branch_id = b.branch_id
+                LEFT JOIN analysis_steps s ON s.output_state_id = ast.state_id
+                LEFT JOIN analysis_states st ON st.state_id = b.starts_at_state_id
+                WHERE b.history_id = ?
+                GROUP BY b.branch_id, b.name, b.starts_at_state_id, st.produced_by_step_id
+            """, _p(history_id)).fetchall()
+        finally:
+            con.close()
+
+        results = []
+        for branch_id, name, starts_at, step_count, produced_by in rows:
+            divergence = starts_at if (produced_by and produced_by.strip()) else None
+            results.append({
+                "branch_id": branch_id,
+                "name": name,
+                "starts_at_state_id": starts_at,
+                "step_count": step_count,
+                "divergence_point_id": divergence,
+            })
+        return results
+
+    def load_operations_by_category(self, history_id: str) -> list[dict]:
+        """
+        Return all steps for a history with their StepCategory names.
+        Steps with no registered category appear with category=None.
+        """
+        con = self._connect(read_only=True)
+        try:
+            rows = con.execute("""
+                SELECT s.func_name, ot.name AS op_type, sc.name AS category
+                FROM analysis_steps s
+                JOIN operations o ON o.operation_id = s.operation_id
+                JOIN operation_types ot ON ot.type_id = o.operation_type_id
+                LEFT JOIN step_categories sc ON sc.category_id = o.step_category_id
+                WHERE s.history_id = ?
+            """, _p(history_id)).fetchall()
+        finally:
+            con.close()
+        return [{"func_name": r[0], "op_type": r[1], "category": r[2]} for r in rows]
+
+    def load_artifact_lifecycle(self, state_id: str) -> list[dict]:
+        """
+        Return the ordered evolution chain of the artifact associated with state_id.
+        Returns [] when no artifact is recorded for state_id.
+        """
+        con = self._connect(read_only=True)
+        try:
+            art_row = con.execute(
+                "SELECT artifact_id FROM artifact_states WHERE analysis_state_id = ?",
+                _p(state_id),
+            ).fetchone()
+            if art_row is None:
+                return []
+            artifact_id = art_row[0]
+
+            rows = con.execute("""
+                SELECT ast.analysis_state_id, st.timestamp, s.func_name, s.raw_line,
+                       ast.content_ref, ast.size_bytes, ast.checksum,
+                       d.modification_type, d.rows_delta,
+                       d.columns_added, d.columns_removed
+                FROM artifact_states ast
+                JOIN analysis_states st ON st.state_id = ast.analysis_state_id
+                LEFT JOIN analysis_steps s ON s.output_state_id = ast.analysis_state_id
+                LEFT JOIN deltas d ON d.step_id = s.step_id
+                WHERE ast.artifact_id = ?
+                ORDER BY st.timestamp
+            """, _p(artifact_id)).fetchall()
+        finally:
+            con.close()
+
+        return [
+            {
+                "state_id": r[0],
+                "timestamp": r[1],
+                "func_name": r[2],
+                "raw_line": r[3],
+                "content_ref": r[4],
+                "size_bytes": r[5],
+                "checksum": r[6],
+                "modification_type": r[7],
+                "rows_delta": r[8],
+                "columns_added": json.loads(r[9] or "[]"),
+                "columns_removed": json.loads(r[10] or "[]"),
+            }
+            for r in rows
+        ]
+
+    def load_artifact_path(self, artifact_state_id: str) -> Optional[str]:
+        """Return the Parquet content_ref for an artifact_state_id, or None."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT content_ref FROM artifact_states WHERE artifact_state_id = ?",
+                _p(artifact_state_id),
+            ).fetchone()
+        finally:
+            con.close()
+        return row[0] if row else None
+
+    def load_pipeline_steps(self, pipeline_id: str) -> list[dict]:
+        """Return step records for a pipeline in fragment order."""
+        con = self._connect(read_only=True)
+        try:
+            fragments = con.execute(
+                "SELECT step_ids, position FROM pipeline_fragments WHERE pipeline_id = ? ORDER BY position",
+                _p(pipeline_id),
+            ).fetchall()
+        finally:
+            con.close()
+
+        ordered_step_ids: list[str] = []
+        for frag in fragments:
+            ordered_step_ids.extend(json.loads(frag[0]))
+
+        if not ordered_step_ids:
+            return []
+
+        con = self._connect(read_only=True)
+        try:
+            placeholders = ",".join(["?" for _ in ordered_step_ids])
+            rows = con.execute(
+                f"SELECT step_id, func_name, raw_line FROM analysis_steps WHERE step_id IN ({placeholders})",
+                ordered_step_ids,
+            ).fetchall()
+        finally:
+            con.close()
+
+        step_map = {r[0]: {"step_id": r[0], "func_name": r[1], "raw_line": r[2]} for r in rows}
+        return [step_map[sid] for sid in ordered_step_ids if sid in step_map]
+
     def to_networkx(self, history_id: Optional[str] = None):
         """Build an in-memory ``networkx.DiGraph`` from the stored provenance DAG."""
         import networkx as nx  # optional dependency
@@ -259,7 +495,17 @@ class StorageBackend:
         con = self._connect()
         try:
             con.execute("INSERT OR REPLACE INTO operation_types VALUES (?,?)", _p(op_type.type_id, op_type.name))
-            con.execute("INSERT OR REPLACE INTO operations VALUES (?,?,?)", _p(op.operation_id, op.name, op.operation_type_id))
+            con.execute("INSERT OR REPLACE INTO operations (operation_id, name, operation_type_id, step_category_id) VALUES (?,?,?,?)",
+                        _p(op.operation_id, op.name, op.operation_type_id, getattr(op, "step_category_id", None)))
+            _commit(con)
+        finally:
+            con.close()
+
+    def _write_step_category(self, category) -> None:
+        con = self._connect()
+        try:
+            con.execute("INSERT OR REPLACE INTO step_categories VALUES (?,?)",
+                        _p(category.category_id, category.name))
             _commit(con)
         finally:
             con.close()

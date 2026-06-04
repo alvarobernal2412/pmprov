@@ -330,7 +330,7 @@ class RuntimeTracker:
             input_state_id = self._current_state_id
 
         # ---- 6. Pydantic model assembly -------------------------------------
-        operation, op_type = self._get_or_create_operation(func_name)
+        operation, op_type, step_cat = self._get_or_create_operation(func_name)
 
         step = AnalysisStep(
             step_id=step_id,
@@ -364,7 +364,7 @@ class RuntimeTracker:
         )
         self.storage.save_state_async(output_state)
         self.storage.save_step_async(step, func_name, raw_line, fp, self._history.history_id)
-        self.storage.save_operation_async(operation, op_type)
+        self.storage.save_operation_async(operation, op_type, step_cat)
         if param_values:
             self.storage.save_param_values_async(param_values)
         if delta:
@@ -506,19 +506,19 @@ class RuntimeTracker:
         to ``"unknown"`` when not registered).
         """
         if func_name in self._operation_cache:
-            return self._operation_cache[func_name]
+            op, ot, _ = self._operation_cache[func_name]
+            return op, ot, None  # step_cat already written on first encounter
 
         type_name = _lookup_operation_type(func_name)
         op_type = OperationType(type_id=_uid(), name=type_name)
 
         # Check for a registered StepCategory for this OperationType
         category_name = _lookup_category(type_name)
-
+        step_cat: Optional[StepCategory] = None
         step_cat_id: Optional[str] = None
         if category_name:
             step_cat = StepCategory(category_id=_uid(), name=category_name)
             step_cat_id = step_cat.category_id
-            self.storage.save_step_category_async(step_cat)
 
         operation = Operation(
             operation_id=_uid(),
@@ -526,8 +526,8 @@ class RuntimeTracker:
             operation_type_id=op_type.type_id,
             step_category_id=step_cat_id,
         )
-        self._operation_cache[func_name] = (operation, op_type)
-        return operation, op_type
+        self._operation_cache[func_name] = (operation, op_type, step_cat)
+        return operation, op_type, step_cat
 
     def _build_artifact_records(
         self,

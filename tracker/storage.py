@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS artifact_states (artifact_state_id VARCHAR PRIMARY KE
 CREATE TABLE IF NOT EXISTS deltas (delta_id VARCHAR PRIMARY KEY, step_id VARCHAR NOT NULL, kind VARCHAR NOT NULL, mutation_type VARCHAR, modification_type VARCHAR, rows_delta INTEGER, columns_added VARCHAR, columns_removed VARCHAR, dtype_changes VARCHAR);
 CREATE TABLE IF NOT EXISTS pipelines (pipeline_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, name VARCHAR NOT NULL, created_at VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS pipeline_fragments (fragment_id VARCHAR PRIMARY KEY, pipeline_id VARCHAR NOT NULL, step_ids VARCHAR NOT NULL, position INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS step_categories (category_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS step_categories (category_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL);
 """
 
 
@@ -131,11 +131,8 @@ class StorageBackend:
     def save_step_async(self, step, func_name, raw_line, param_fingerprint, history_id) -> None:
         self._executor.submit(self._write_step, step, func_name, raw_line, param_fingerprint, history_id)
 
-    def save_operation_async(self, op, op_type) -> None:
-        self._executor.submit(self._write_operation, op, op_type)
-
-    def save_step_category_async(self, category) -> None:
-        self._executor.submit(self._write_step_category, category)
+    def save_operation_async(self, op, op_type, step_category=None) -> None:
+        self._executor.submit(self._write_operation, op, op_type, step_category)
 
     def save_agent_async(self, agent, history_id) -> None:
         self._executor.submit(self._write_agent, agent, history_id)
@@ -487,21 +484,15 @@ class StorageBackend:
         finally:
             con.close()
 
-    def _write_operation(self, op, op_type) -> None:
+    def _write_operation(self, op, op_type, step_category=None) -> None:
         con = self._connect()
         try:
+            if step_category is not None:
+                con.execute("INSERT OR REPLACE INTO step_categories VALUES (?,?)",
+                            _p(step_category.category_id, step_category.name))
             con.execute("INSERT OR REPLACE INTO operation_types VALUES (?,?)", _p(op_type.type_id, op_type.name))
             con.execute("INSERT OR REPLACE INTO operations (operation_id, name, operation_type_id, step_category_id) VALUES (?,?,?,?)",
                         _p(op.operation_id, op.name, op.operation_type_id, getattr(op, "step_category_id", None)))
-            _commit(con)
-        finally:
-            con.close()
-
-    def _write_step_category(self, category) -> None:
-        con = self._connect()
-        try:
-            con.execute("INSERT OR REPLACE INTO step_categories VALUES (?,?)",
-                        _p(category.category_id, category.name))
             _commit(con)
         finally:
             con.close()

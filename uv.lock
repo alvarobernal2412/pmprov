@@ -594,6 +594,7 @@ name = "pmprov"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "ipywidgets" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -630,6 +631,7 @@ dev = [
 requires-dist = [
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = "==1.5.3" },
     { name = "duckdb", marker = "extra == 'full'", specifier = "==1.5.3" },
+    { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "ipywidgets", marker = "extra == 'full'", specifier = "==8.1.8" },
     { name = "ipywidgets", marker = "extra == 'widgets'", specifier = "==8.1.8" },
     { name = "matplotlib", marker = "extra == 'full'", specifier = "==3.10.9" },

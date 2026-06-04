@@ -165,9 +165,11 @@ class RuntimeTracker:
         self.storage = storage
         self.session_id = session_id
         self._env = _capture_env()
+        _username = _try_getuser()
         self._agent = Agent(
-            agent_id=agent_id or _try_getuser(),
+            agent_id=agent_id or _username,
             agent_type=AgentType.HUMAN,
+            username=_username,
         )
 
         # Artifact identity registries (scoped to this session)
@@ -179,6 +181,9 @@ class RuntimeTracker:
 
         # Branch-divergence detection: func_name → list of execution records
         self._cell_executions: dict[str, list[dict]] = {}
+
+        # Maps func_name → callable, populated by trace_step for replay support.
+        self._replay_func_registry: dict[str, Any] = {}
 
         # ---- Seed session-level provenance records -------------------------
         self._history = AnalysisHistory(
@@ -242,6 +247,7 @@ class RuntimeTracker:
 
         # ---- 2. Execute (user exceptions always propagate) -------------------
         output = func(*args, **kwargs)
+        self._replay_func_registry[func_name] = func
 
         # ---- 3. Post-snapshots -----------------------------------------------
         try:
@@ -276,6 +282,27 @@ class RuntimeTracker:
 
         step_id = _uid()
         output_state_id = _uid()
+
+        # Ensure DataFrame args are persisted so they can be referenced as
+        # ArtifactStateParameterValue (enabling replay_state to reconstruct them).
+        try:
+            for a in list(args) + list(kwargs.values()):
+                if type(a).__name__ == "DataFrame" and id(a) not in self._artifact_state_registry:
+                    _input_state_id = _uid()
+                    _input_path = self.storage.save_artifact(_input_state_id, a)
+                    if _input_path:
+                        try:
+                            _input_recs = self._build_artifact_records(a, _input_state_id, _input_path)
+                            _input_art_obj = _input_recs.get("artifact_obj")
+                            _input_ast_obj = _input_recs.get("artifact_state_obj")
+                            if _input_ast_obj:
+                                self.storage.save_artifact_records_async(
+                                    _input_art_obj, _input_ast_obj, self._history.history_id
+                                )
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
         param_values: list[dict] = []
         try:

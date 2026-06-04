@@ -1,0 +1,87 @@
+{
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "timezone": "Europe/Madrid",
+    "packageRules": [
+        {
+            "matchManagers": [
+                "pep621"
+            ],
+            "matchDepTypes": [
+                "dependencies"
+            ],
+            "groupName": "python (runtime)"
+        },
+        {
+            "matchManagers": [
+                "pep621"
+            ],
+            "matchDepTypes": [
+                "optionalDependencies"
+            ],
+            "groupName": "python (optional)"
+        },
+        {
+            "matchManagers": [
+                "pep621"
+            ],
+            "matchDepTypes": [
+                "devDependencies"
+            ],
+            "groupName": "python (development)"
+        },
+        {
+            "matchManagers": [
+                "github-actions"
+            ],
+            "separateMajorMinor": false,
+            "groupName": "ci"
+        },
+        {
+            "matchUpdateTypes": [
+                "lockFileMaintenance"
+            ],
+            "groupName": "lockfiles",
+            "dependencyDashboardApproval": true
+        }
+    ],
+    "dependencyDashboard": true,
+    "prConcurrentLimit": 0,
+    "prHourlyLimit": 0,
+    "osvVulnerabilityAlerts": true,
+    "vulnerabilityAlerts": {
+        "enabled": true,
+        "groupName": "vulnerable",
+        "labels": [
+            "security",
+            "dependencies"
+        ]
+    },
+    "enabledManagers": [
+        "pep621",
+        "github-actions"
+    ],
+    "labels": [
+        "dependencies"
+    ],
+    "rebaseWhen": "behind-base-branch",
+    "rangeStrategy": "pin",
+    "lockFileMaintenance": {
+        "enabled": true,
+        "groupName": "lockfiles",
+        "schedule": [
+            "* * * * 0,6"
+        ]
+    },
+    "assignees": [
+        "alvarobernal2412"
+    ],
+    "reviewers": [
+        "alvarobernal2412"
+    ],
+    "extends": [
+        "mergeConfidence:age-confidence-badges"
+    ],
+    "baseBranches": [
+        "main"
+    ]
+}

@@ -114,9 +114,9 @@ class DataFrameDelta(Delta):
         default_factory=dict,
         description="Map of column name → new dtype string for columns whose type changed.",
     )
-    rows_added: Optional[int] = Field(None, description="Number of rows added (if applicable).")
-    rows_removed: Optional[int] = Field(
-        None, description="Number of rows removed (if applicable)."
+    rows_delta: Optional[int] = Field(
+        None,
+        description="Net row count change (positive = rows added, negative = rows removed).",
     )
 
 

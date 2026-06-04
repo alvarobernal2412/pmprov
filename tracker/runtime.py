@@ -119,6 +119,11 @@ def _capture_env() -> RuntimeEnvironment:
     )
 
 
+def _infer_artifact_type(obj: Any) -> ArtifactType:
+    # Conceptual type defaults to OTHER; future: inspect XES columns to detect EVENT_LOG
+    return ArtifactType.OTHER
+
+
 class RuntimeTracker:
     """
     Stateful provenance tracker for one notebook session.
@@ -540,7 +545,7 @@ class RuntimeTracker:
             artifact = Artifact(
                 artifact_id=artifact_id,
                 name=f"dataframe_{artifact_id[:8]}",
-                artifact_type=ArtifactType.DATAFRAME,
+                artifact_type=_infer_artifact_type(obj),
             )
             self._artifact_registry[obj_python_id] = artifact_id
 

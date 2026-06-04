@@ -12,7 +12,6 @@ class ArtifactType(str, Enum):
     EVENT_LOG = "event_log"
     PROCESS_MODEL = "process_model"
     KPI_REPORT = "kpi_report"
-    DATAFRAME = "dataframe"
     OTHER = "other"
 
 

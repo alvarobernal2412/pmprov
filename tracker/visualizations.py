@@ -2,7 +2,7 @@
 Provenance visualization methods for RuntimeTracker.
 
 Imported as a side-effect from tracker/__init__.py, which patches
-show_graph() and show_graph_widget() onto RuntimeTracker instances.
+show_graph(), show_graph_widget(), and list_states() onto RuntimeTracker.
 """
 
 from __future__ import annotations
@@ -30,41 +30,20 @@ def _is_marimo() -> bool:
 
 
 def _step_nodes(graph_data: dict) -> list[dict]:
-    """Return only analyst-facing step nodes (drop session_root and branch records)."""
-    return [
-        n for n in graph_data["nodes"]
-        if n["metadata"].get("node_type") not in ("session_root", "branch")
-        and not n["node_id"].startswith("branch-")
-    ]
+    """Return analyst-facing steps (non-root states that were produced by a step)."""
+    step_output_ids = {st["output_state_id"] for st in graph_data["steps"]}
+    return [s for s in graph_data["states"] if s["state_id"] in step_output_ids]
 
 
-def _branch_name_map(graph_data: dict) -> dict[str, str]:
-    """Return branch_id → branch_name from branch metadata nodes."""
-    result: dict[str, str] = {}
-    for n in graph_data["nodes"]:
-        meta = n["metadata"]
-        if meta.get("node_type") == "branch":
-            b = meta.get("branch", {})
-            result[b.get("branch_id", "")] = b.get("name", "unknown")
-    # also pick up the main branch from session_root nodes
-    for n in graph_data["nodes"]:
-        meta = n["metadata"]
-        if meta.get("node_type") == "session_root":
-            b = meta.get("branch", {})
-            result[b.get("branch_id", "")] = b.get("name", "main")
-    return result
-
-
-def _node_label(node: dict) -> str:
-    ts = node.get("timestamp", "")
+def _state_label(state: dict) -> str:
+    ts = state.get("timestamp", "")
     try:
         from datetime import datetime
         dt = datetime.fromisoformat(ts)
         time_str = dt.strftime("%H:%M:%S")
     except Exception:
         time_str = ts[:8] if ts else "?"
-    state_id = node["metadata"].get("output_state", {}).get("state_id", node["node_id"])
-    return f"{time_str}\n{state_id[:8]}"
+    return f"{time_str}\n{state['state_id'][:8]}"
 
 
 def _edge_label(func_name: str) -> str:
@@ -72,32 +51,35 @@ def _edge_label(func_name: str) -> str:
 
 
 def _build_display_graph(graph_data: dict):
-    """Build a networkx DiGraph from step nodes only, with a virtual ROOT."""
+    """Build a networkx DiGraph from step-produced states only."""
     import networkx as nx
 
-    steps = {n["node_id"]: n for n in _step_nodes(graph_data)}
-    step_ids = set(steps)
+    step_output_ids = {st["output_state_id"] for st in graph_data["steps"]}
+    state_map = {s["state_id"]: s for s in graph_data["states"]}
 
     G = nx.DiGraph()
-    for node_id, node in steps.items():
-        G.add_node(node_id, **node)
+    for sid in step_output_ids:
+        if sid in state_map:
+            G.add_node(sid, **state_map[sid])
 
-    for e in graph_data["edges"]:
-        if e["parent"] in step_ids and e["child"] in step_ids:
-            G.add_edge(e["parent"], e["child"], func_name=e["type"])
-        elif e["child"] in step_ids and e["parent"] not in step_ids:
-            # edge from session_root → first step
-            G.add_edge("__ROOT__", e["child"], func_name=e["type"])
+    for st in graph_data["steps"]:
+        src = st["input_state_id"]
+        dst = st["output_state_id"]
+        if dst in step_output_ids:
+            if src in step_output_ids:
+                G.add_edge(src, dst, func_name=st["func_name"])
+            else:
+                # edge from root/non-step state -> first step output
+                G.add_edge("__ROOT__", dst, func_name=st["func_name"])
 
     ROOT = "__ROOT__"
-    # Add virtual root for any step with no in-edges
     root_children = [n for n in G.nodes() if n != ROOT and G.in_degree(n) == 0]
     if root_children:
         G.add_node(ROOT)
         for child in root_children:
             G.add_edge(ROOT, child, func_name="")
 
-    return G, steps
+    return G, state_map
 
 
 def _compute_layout(G) -> dict:
@@ -106,7 +88,6 @@ def _compute_layout(G) -> dict:
     try:
         from networkx.drawing.nx_pydot import graphviz_layout
         pos = graphviz_layout(G, prog="dot")
-        # graphviz y increases downward — normalize so root is at top
         return pos
     except Exception:
         pass
@@ -127,13 +108,14 @@ def _compute_layout(G) -> dict:
 
 
 def _text_fallback(graph_data: dict) -> None:
-    steps = _step_nodes(graph_data)
-    print(f"Provenance graph — {len(steps)} step(s), {len(graph_data['edges'])} edge(s)")
+    steps = graph_data["steps"]
+    states = {s["state_id"]: s for s in graph_data["states"]}
+    print(f"Provenance graph — {len(steps)} step(s)")
     print(f"{'Timestamp':<26} {'func_name'}")
     print("-" * 60)
-    for n in steps:
-        ts = n.get("timestamp", "")[:19]
-        fn = n["metadata"].get("func_name", "?")
+    for st in sorted(steps, key=lambda x: x.get("timestamp", "")):
+        ts = st.get("timestamp", "")[:19]
+        fn = st.get("func_name", "?")
         print(f"{ts:<26} {fn}")
 
 
@@ -152,9 +134,9 @@ def _show_graph(
         return None
 
     graph_data = self.storage.load_graph()
-    steps = _step_nodes(graph_data)
+    step_outputs = _step_nodes(graph_data)
 
-    if not steps:
+    if not step_outputs:
         print("No provenance steps recorded yet.")
         return None
 
@@ -165,18 +147,16 @@ def _show_graph(
         return None
 
     try:
-        G, step_map = _build_display_graph(graph_data)
+        G, state_map = _build_display_graph(graph_data)
         pos = _compute_layout(G)
-
-        # Scale y axis for readability
         pos = {n: (x, y * 1.5) for n, (x, y) in pos.items()}
 
         node_labels = {}
         for node_id in G.nodes():
             if node_id == "__ROOT__":
                 node_labels[node_id] = "ROOT"
-            elif node_id in step_map:
-                node_labels[node_id] = _node_label(step_map[node_id])
+            elif node_id in state_map:
+                node_labels[node_id] = _state_label(state_map[node_id])
             else:
                 node_labels[node_id] = node_id[:8]
 
@@ -232,19 +212,19 @@ def _render_graph_image(self: "RuntimeTracker") -> Any:
         return None
 
     graph_data = self.storage.load_graph()
-    steps = _step_nodes(graph_data)
-    if not steps:
+    step_outputs = _step_nodes(graph_data)
+    if not step_outputs:
         return None
 
     try:
-        G, step_map = _build_display_graph(graph_data)
+        G, state_map = _build_display_graph(graph_data)
         pos = _compute_layout(G)
         pos = {n: (x, y * 1.5) for n, (x, y) in pos.items()}
 
         node_labels = {
-            node_id: ("ROOT" if node_id == "__ROOT__" else _node_label(step_map[node_id]))
+            node_id: ("ROOT" if node_id == "__ROOT__" else _state_label(state_map[node_id]))
             for node_id in G.nodes()
-            if node_id == "__ROOT__" or node_id in step_map
+            if node_id == "__ROOT__" or node_id in state_map
         }
         edge_labels = {
             (u, v): _edge_label(d.get("func_name", ""))
@@ -300,29 +280,30 @@ def _show_graph_widget(
         return None
 
     graph_data = self.storage.load_graph()
-    steps = _step_nodes(graph_data)
+    step_outputs = _step_nodes(graph_data)
 
-    if not steps:
+    if not step_outputs:
         print("No provenance steps recorded yet.")
         return None
 
-    branch_names = _branch_name_map(graph_data)
+    # Build step index for detail panel: keyed by output_state_id
+    step_index = {st["output_state_id"]: st for st in graph_data["steps"]}
+    state_index = {s["state_id"]: s for s in graph_data["states"]}
 
     # Build selector options sorted by timestamp
     options = []
-    for n in sorted(steps, key=lambda x: x.get("timestamp", "")):
-        ts = n.get("timestamp", "")
+    for st in sorted(graph_data["steps"], key=lambda x: x.get("timestamp", "")):
+        ts = st.get("timestamp", "")
         try:
             from datetime import datetime
             dt = datetime.fromisoformat(ts)
             time_str = dt.strftime("%H:%M:%S")
         except Exception:
             time_str = ts[:8]
-        fn = n["metadata"].get("func_name", "?")
-        branch_id = n["metadata"].get("output_state", {}).get("branch_id", "")
-        branch = branch_names.get(branch_id, "main")
-        label = f"{time_str} | {fn} | {branch}"
-        options.append((label, n["node_id"]))
+        fn = st.get("func_name", "?")
+        state_id = st["output_state_id"]
+        label = f"{time_str} | {fn}"
+        options.append((label, state_id))
 
     # --- Widgets ---
     graph_image = self._render_graph_image()
@@ -342,8 +323,6 @@ def _show_graph_widget(
         style={"button_width": "90px"},
     )
     artifact_output = widgets.Output()
-
-    node_index = {n["node_id"]: n for n in steps}
 
     def _delta_html(delta: dict) -> str:
         if not delta or delta.get("kind") == "error":
@@ -373,39 +352,36 @@ def _show_graph_widget(
         return "<br/>".join(lines) if lines else "<i>none</i>"
 
     def update(change: Any = None) -> None:
-        node_id = selector.value
-        if node_id is None:
+        state_id = selector.value
+        if state_id is None:
             return
-        node = node_index.get(node_id)
-        if node is None:
+        step = step_index.get(state_id)
+        if step is None:
             return
 
-        meta = node["metadata"]
-        fn = meta.get("func_name", "?")
-        raw = meta.get("raw_line", "")
-        op_type = meta.get("operation_type", {}).get("name", "unknown")
-        branch_id = meta.get("output_state", {}).get("branch_id", "")
-        branch = branch_names.get(branch_id, "main")
-        state_id = meta.get("output_state", {}).get("state_id", node_id)
-        delta_html = _delta_html(meta.get("delta", {}))
+        fn = step.get("func_name", "?")
+        raw = step.get("raw_line", "")
+        ts = step.get("timestamp", "")[:19].replace("T", " ")
 
         details.value = (
             f"<b>state_id</b>: <code>{state_id}</code><br/>"
-            f"<b>branch</b>: {branch}<br/>"
+            f"<b>branch</b>: main<br/>"  # TODO: join analysis_branches once available
             f"<b>func</b>: <code>{fn}</code><br/>"
-            f"<b>op type</b>: {op_type}<br/>"
+            f"<b>op type</b>: unknown<br/>"  # TODO: join operation_types
             f"<b>raw line</b>: <code>{raw}</code><br/>"
-            f"<b>delta</b>:<br/>{delta_html}"
+            f"<b>timestamp</b>: {ts}"
         )
 
-        artifact_path = node.get("artifact_path")
+        # Try to load artifact by path convention: artifact_dir/<state_id>.parquet
+        artifact_path = str(self.storage.artifact_dir / f"{state_id}.parquet")
         with artifact_output:
             artifact_output.clear_output(wait=True)
-            if not artifact_path:
-                print("No artifact for this step.")
-                return
             try:
                 import pandas as pd
+                from pathlib import Path
+                if not Path(artifact_path).exists():
+                    print("No artifact for this step.")
+                    return
                 df = pd.read_parquet(artifact_path)
                 from IPython.display import HTML
                 if toggle.value == "Preview":
@@ -441,7 +417,7 @@ def _show_graph_widget(
 
 def _list_states(self: "RuntimeTracker") -> Any:
     """
-    Return a DataFrame listing every recorded analysis state in the current
+    Return a DataFrame listing every recorded analysis step in the current
     session, sorted by timestamp.
 
     Columns
@@ -455,34 +431,23 @@ def _list_states(self: "RuntimeTracker") -> Any:
     """
     import pandas as pd
 
-    graph_data = self.storage.load_graph()
-    steps = _step_nodes(graph_data)
-
-    if not steps:
-        print("No provenance steps recorded yet.")
-        return pd.DataFrame()
-
-    branch_names = _branch_name_map(graph_data)
-
-    rows = []
-    for n in sorted(steps, key=lambda x: x.get("timestamp", "")):
-        meta = n["metadata"]
-        branch_id = meta.get("output_state", {}).get("branch_id", "")
-        rows.append({
-            "state_id":       meta.get("output_state", {}).get("state_id", n["node_id"]),
-            "timestamp":      n.get("timestamp", "")[:19].replace("T", " "),
-            "branch":         branch_names.get(branch_id, "main"),
-            "func_name":      meta.get("func_name", "?"),
-            "operation_type": meta.get("operation_type", {}).get("name", "unknown"),
-            "has_artifact":   n.get("artifact_path") is not None,
-        })
-
+    graph = self.storage.load_graph()
+    rows = [
+        {
+            "state_id": step["output_state_id"],
+            "timestamp": step.get("timestamp", "")[:19].replace("T", " "),
+            "branch": "",            # TODO: join analysis_branches once available
+            "func_name": step.get("func_name", "?"),
+            "operation_type": "unknown",   # TODO: join operation_types table
+            "has_artifact": False,          # TODO: join artifact_states table
+        }
+        for step in graph["steps"]
+    ]
     df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df = df.sort_values("timestamp").reset_index(drop=True)
 
-    # In a Jupyter cell `rt.list_states()` is a bare expression whose return
-    # value Jupyter displays automatically — calling display() here too would
-    # produce a second table.  Only print explicitly in non-interactive contexts
-    # (plain Python scripts) where the return value is silently discarded.
     try:
         from IPython import get_ipython
         if get_ipython() is None:

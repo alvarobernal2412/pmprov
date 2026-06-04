@@ -105,8 +105,22 @@ def test_ac2_3_agent_captured(rt):
     assert rows[0][0] in ("human", "automated")
 
 
-# def test_ac2_4_replay_produces_equivalent_state(rt, event_log):
-#     """AC 2.4 – re-executing a recorded step yields an equivalent output.
-#     Replay API not yet implemented.
-#     """
-#     raise NotImplementedError
+def test_ac2_4_replay_state_reproduces_equivalent_output(rt, event_log):
+    """AC 2.4 – re-execution via replay_state() produces an equivalent output state."""
+    import tracker.introspection  # noqa: F401
+
+    original = rt.trace_step(
+        func=lambda df: df.assign(flag=True),
+        func_name="assign",
+        raw_line="df=df.assign(flag=True)",
+        args=[event_log],
+        kwargs={},
+    )
+    original_state = rt._current_state_id
+    settle(rt)
+
+    replayed_output = rt.replay_state(original_state)
+
+    assert replayed_output is not None
+    assert list(replayed_output.columns) == list(original.columns)
+    assert replayed_output.shape == original.shape

@@ -38,11 +38,29 @@ def test_ac4_1_pipeline_fragment_created(rt, event_log):
     assert recorded == step_ids
 
 
-# def test_ac4_2_parameter_override(rt, event_log):
-#     """AC 4.2 – a pipeline fragment can be replayed with different parameter values.
-#     Parameter override / replay API not yet implemented.
-#     """
-#     raise NotImplementedError
+def test_ac4_2_parameter_override(rt, event_log):
+    """AC 4.2 – a pipeline can be replayed with overridden parameter values."""
+    import tracker.introspection  # noqa: F401
+
+    original_func = lambda df, col="orig": df.assign(**{col: 1})
+    rt.trace_step(func=original_func, func_name="add_col",
+                  raw_line="df=add_col(df)", args=[event_log], kwargs={"col": "orig"})
+    settle(rt)
+    con = rt.storage._connect(read_only=True)
+    step_ids = [r[0] for r in con.execute("SELECT step_id FROM analysis_steps").fetchall()]
+    con.close()
+    pipeline_id = rt.create_pipeline("ac42_pipe", step_ids)
+    settle(rt)
+
+    result = rt.replay_pipeline(
+        pipeline_id=pipeline_id,
+        func_map={"add_col": original_func},
+        initial_input=event_log.copy(),
+        param_overrides={"add_col": {"col": "overridden_col"}},
+    )
+
+    assert result["errors"] == []
+    assert "overridden_col" in result["output"].columns
 
 
 def test_ac4_3_pipeline_covers_distinct_steps(rt, event_log):

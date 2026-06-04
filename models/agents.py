@@ -26,6 +26,9 @@ class Agent(BaseModel):
     agent_type: AgentType = Field(
         ..., description="Whether the agent is a human analyst or an automated system."
     )
+    username: Optional[str] = Field(
+        None, description="OS username of the agent, captured at session start."
+    )
 
 
 class RuntimeEnvironment(BaseModel):

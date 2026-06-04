@@ -16,13 +16,11 @@ class ArtifactType(str, Enum):
 
 
 class ModificationType(str, Enum):
-    """High-level classification of what a Delta describes."""
-
-    SCHEMA_CHANGE = "schema_change"
-    ROW_FILTER = "row_filter"
-    ROW_ADD = "row_add"
-    VALUE_CHANGE = "value_change"
-    TYPE_CHANGE = "type_change"
+    """Analyst-facing classification of what a Delta describes."""
+    ADDITION = "addition"    # new rows or columns added
+    REMOVAL = "removal"      # rows or columns removed
+    RENAMING = "renaming"    # columns renamed
+    CASTING = "casting"      # column dtype changed
     OTHER = "other"
 
 

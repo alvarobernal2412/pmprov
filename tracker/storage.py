@@ -411,19 +411,15 @@ class StorageBackend:
                 "SELECT step_ids, position FROM pipeline_fragments WHERE pipeline_id = ? ORDER BY position",
                 _p(pipeline_id),
             ).fetchall()
-        finally:
-            con.close()
 
-        ordered_step_ids: list[str] = []
-        for frag in fragments:
-            ordered_step_ids.extend(json.loads(frag[0]))
+            ordered_step_ids: list[str] = []
+            for frag in fragments:
+                ordered_step_ids.extend(json.loads(frag[0]))
 
-        if not ordered_step_ids:
-            return []
+            if not ordered_step_ids:
+                return []
 
-        con = self._connect(read_only=True)
-        try:
-            placeholders = ",".join(["?" for _ in ordered_step_ids])
+            placeholders = ",".join(["?"] * len(ordered_step_ids))
             rows = con.execute(
                 f"SELECT step_id, func_name, raw_line FROM analysis_steps WHERE step_id IN ({placeholders})",
                 ordered_step_ids,

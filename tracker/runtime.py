@@ -61,7 +61,7 @@ from models import (
 )
 from tracker.ast_rewriter import _is_omitted
 from tracker.delta_calculator import compute_delta
-from tracker.operation_registry import lookup as _lookup_operation_type
+from tracker.operation_registry import lookup as _lookup_operation_type, lookup_category as _lookup_category
 from tracker.snapshot_engine import capture_snapshot
 from tracker.storage import StorageBackend
 
@@ -480,7 +480,6 @@ class RuntimeTracker:
         op_type = OperationType(type_id=_uid(), name=type_name)
 
         # Check for a registered StepCategory for this OperationType
-        from tracker.operation_registry import lookup_category as _lookup_category
         category_name = _lookup_category(type_name)
 
         step_cat_id: Optional[str] = None

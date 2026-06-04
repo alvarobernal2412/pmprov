@@ -55,6 +55,7 @@ from models import (
     ListParameterValue,
     Operation,
     OperationType,
+    StepCategory,
     RuntimeEnvironment,
     ScalarParameterValue,
 )
@@ -477,10 +478,22 @@ class RuntimeTracker:
 
         type_name = _lookup_operation_type(func_name)
         op_type = OperationType(type_id=_uid(), name=type_name)
+
+        # Check for a registered StepCategory for this OperationType
+        from tracker.operation_registry import lookup_category as _lookup_category
+        category_name = _lookup_category(type_name)
+
+        step_cat_id: Optional[str] = None
+        if category_name:
+            step_cat = StepCategory(category_id=_uid(), name=category_name)
+            step_cat_id = step_cat.category_id
+            self.storage.save_step_category_async(step_cat)
+
         operation = Operation(
             operation_id=_uid(),
             name=func_name,
             operation_type_id=op_type.type_id,
+            step_category_id=step_cat_id,
         )
         self._operation_cache[func_name] = (operation, op_type)
         return operation, op_type

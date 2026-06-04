@@ -51,6 +51,9 @@ from typing import Callable
 # All keys map to an OperationType name string.
 _registry: dict[str, str] = {}
 
+# Maps OperationType name → StepCategory name
+_category_registry: dict[str, str] = {}
+
 
 def operation_type(type_name: str, func: Callable | None = None):
     """
@@ -75,6 +78,27 @@ def operation_type(type_name: str, func: Callable | None = None):
 
     _register(func, type_name)
     return func
+
+
+def step_category(category_name: str, operation_type_name: str) -> None:
+    """
+    Register *category_name* as the StepCategory for steps whose OperationType
+    is *operation_type_name*.
+
+    Parameters
+    ----------
+    category_name:
+        Broad grouping label (e.g., ``"log_enrichment"``,
+        ``"conformance_checking"``, ``"process_discovery"``).
+    operation_type_name:
+        The fine-grained OperationType name. Must be an exact string match.
+    """
+    _category_registry[operation_type_name] = category_name
+
+
+def lookup_category(operation_type_name: str) -> str | None:
+    """Return the StepCategory name for *operation_type_name*, or None."""
+    return _category_registry.get(operation_type_name)
 
 
 def lookup(func_name: str) -> str:

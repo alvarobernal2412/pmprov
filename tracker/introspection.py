@@ -29,6 +29,23 @@ def _describe_state(self: "RuntimeTracker", state_id: str) -> dict:
     return self.storage.load_state_detail(state_id)
 
 
+def _describe_step(self: "RuntimeTracker", step_id: str) -> dict:
+    """
+    Return full metadata for a recorded analysis step.
+
+    Returns a dict with keys: step_id, output_state_id, func_name, raw_line,
+    timestamp, branch_name, operation, agent, environment, params, delta.
+    Returns {} if step_id is not found.
+
+    Parameters
+    ----------
+    step_id:
+        The UUID of the step to describe. Use rt.list_states() to find
+        step_ids via the produced_by_step_id column.
+    """
+    return self.storage.load_step_detail(step_id)
+
+
 def _list_branches(self: "RuntimeTracker") -> Any:
     """
     Return a DataFrame listing all branches in the current session.
@@ -184,6 +201,7 @@ def _replay_pipeline(
 from tracker.runtime import RuntimeTracker  # noqa: E402
 
 RuntimeTracker.describe_state = _describe_state
+RuntimeTracker.describe_step = _describe_step
 RuntimeTracker.list_branches = _list_branches
 RuntimeTracker.replay_state = _replay_state
 RuntimeTracker.replay_pipeline = _replay_pipeline

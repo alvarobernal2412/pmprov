@@ -50,12 +50,12 @@ def enable_logging(level: str | int = "WARNING", file: str | None = None) -> Non
 
 
 def log_storage_error(exc: Exception, **ctx: Any) -> None:
-    component = ctx.pop("method", "storage")
+    component = ctx.pop("component", "storage")
     _logger.error("%s%s", exc, _fmt_ctx(ctx), exc_info=exc, extra={"component": component})
 
 
 def log_trace_warning(msg: str, **ctx: Any) -> None:
-    component = ctx.pop("step", "runtime.trace_step")
+    component = ctx.pop("component", "runtime.trace_step")
     _logger.warning("%s%s", msg, _fmt_ctx(ctx), extra={"component": component})
 
 

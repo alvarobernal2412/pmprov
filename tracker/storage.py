@@ -178,7 +178,7 @@ class StorageBackend:
                 df.to_parquet(str(path))
             return str(path)
         except Exception as e:
-            log_storage_error(e, method="save_artifact", node_id=node_id)
+            log_storage_error(e, component="save_artifact", node_id=node_id)
             return None
 
     # ------------------------------------------------------------------
@@ -454,8 +454,8 @@ class StorageBackend:
                         _p(history.history_id, history.name or "", _now(), history.active_state_id or ""))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_history", history_id=history.history_id)
-            raise
+            log_storage_error(e, component="_write_history", history_id=history.history_id)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -466,8 +466,8 @@ class StorageBackend:
                         _p(branch.branch_id, branch.history_id, branch.name, branch.starts_at_state_id))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_branch", branch_id=branch.branch_id)
-            raise
+            log_storage_error(e, component="_write_branch", branch_id=branch.branch_id)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -479,8 +479,8 @@ class StorageBackend:
                            state.produced_by_step_id or "", state.derived_from_state_id or "", _now()))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_state", state_id=state.state_id)
-            raise
+            log_storage_error(e, component="_write_state", state_id=state.state_id)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -494,8 +494,8 @@ class StorageBackend:
                    func_name, raw_line or "", param_fingerprint or "", _now()))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_step", func_name=func_name)
-            raise
+            log_storage_error(e, component="_write_step", func_name=func_name)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -510,8 +510,8 @@ class StorageBackend:
                         _p(op.operation_id, op.name, op.operation_type_id, getattr(op, "step_category_id", None)))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_operation", operation=op.name)
-            raise
+            log_storage_error(e, component="_write_operation", operation=op.name)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -522,8 +522,8 @@ class StorageBackend:
                         _p(agent.agent_id, history_id, agent.agent_type.value, getattr(agent, "username", "")))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_agent", agent_id=agent.agent_id)
-            raise
+            log_storage_error(e, component="_write_agent", agent_id=agent.agent_id)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -535,8 +535,8 @@ class StorageBackend:
                            json.dumps(env.library_versions), env.runtime or ""))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_env", env_id=env.env_id)
-            raise
+            log_storage_error(e, component="_write_env", env_id=env.env_id)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -550,8 +550,8 @@ class StorageBackend:
                                json.dumps(pv, default=str)))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_param_values")
-            raise
+            log_storage_error(e, component="_write_param_values")
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -567,7 +567,7 @@ class StorageBackend:
                            artifact_state.checksum, artifact_state.content_ref, artifact_state.size_bytes))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_artifact_records",
+            log_storage_error(e, component="_write_artifact_records",
                               artifact_state_id=artifact_state.artifact_state_id)
             raise
         finally:
@@ -585,8 +585,8 @@ class StorageBackend:
                            json.dumps(delta.get("dtype_changes", {}))))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_delta", step_id=step_id)
-            raise
+            log_storage_error(e, component="_write_delta", step_id=step_id)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -597,8 +597,8 @@ class StorageBackend:
                         _p(active_state_id, history_id))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_update_history_active_state", history_id=history_id)
-            raise
+            log_storage_error(e, component="_update_history_active_state", history_id=history_id)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -609,8 +609,8 @@ class StorageBackend:
                         _p(pipeline_id, history_id, name, _now()))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_pipeline", pipeline_id=pipeline_id)
-            raise
+            log_storage_error(e, component="_write_pipeline", pipeline_id=pipeline_id)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()
 
@@ -621,7 +621,7 @@ class StorageBackend:
                         _p(fragment_id, pipeline_id, json.dumps(step_ids), position))
             _commit(con)
         except Exception as e:
-            log_storage_error(e, method="_write_fragment", fragment_id=fragment_id)
-            raise
+            log_storage_error(e, component="_write_fragment", fragment_id=fragment_id)
+            raise  # store exception on the Future; callers that call .result() will see it
         finally:
             con.close()

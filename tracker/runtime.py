@@ -264,7 +264,7 @@ class RuntimeTracker:
                 for key, val in zip(list(pre_snaps.keys()), all_input_vals)
             }
         except Exception as e:
-            log_trace_warning("post-snapshot failed", step="snapshot", func_name=func_name, error=e)
+            log_trace_warning("post-snapshot failed", component="snapshot", func_name=func_name, error=e)
             post_snap = {}
             post_input_snaps = {}
 
@@ -281,7 +281,7 @@ class RuntimeTracker:
                 first_key = next(iter(pre_snaps))
                 delta = compute_delta(first_pre, post_input_snaps.get(first_key, {}))
         except Exception as e:
-            log_trace_warning("delta computation failed", step="delta", func_name=func_name, error=e)
+            log_trace_warning("delta computation failed", component="delta", func_name=func_name, error=e)
             delta = {"kind": "error"}
 
         # ---- 5. Parameter values + branch-divergence detection ---------------

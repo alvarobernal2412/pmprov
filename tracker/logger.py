@@ -38,7 +38,7 @@ def enable_logging(level: str | int = "WARNING", file: str | None = None) -> Non
     file:
         Optional path to a log file. If omitted, output goes to stderr.
     """
-    numeric = logging._nameToLevel.get(level, level) if isinstance(level, str) else level  # type: ignore[arg-type]
+    numeric = logging.getLevelNamesMapping().get(level.upper(), logging.WARNING) if isinstance(level, str) else level
     handler: logging.Handler = (
         logging.FileHandler(file) if file else logging.StreamHandler(sys.stderr)
     )

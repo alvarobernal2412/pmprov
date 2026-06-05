@@ -417,36 +417,38 @@ def _show_graph_widget(
 
 def _list_states(self: "RuntimeTracker") -> Any:
     """
-    Return a DataFrame listing every recorded analysis step in the current
-    session, sorted by timestamp.
+    Return a DataFrame listing every recorded analysis state in the current session.
 
     Columns
     -------
-    state_id        Full UUID — paste into rt.checkout() to branch from that state.
-    timestamp       UTC time the state was created.
-    branch          Name of the branch this state belongs to.
-    func_name       Function call that produced this state.
-    operation_type  Semantic category (e.g. 'case_aggregation', 'unknown').
-    has_artifact    True when a Parquet artifact was saved for this state.
+    state_id              Full UUID — paste into rt.checkout() to branch from that state.
+    timestamp             UTC time the state was created.
+    branch_name           Name of the branch this state belongs to.
+    produced_by_step_id   Step that created this state (None for the root state).
+    derived_from_state_id Parent state (None for the root state).
+    artifact_state_ids    Comma-separated list of associated artifact state UUIDs.
     """
     import pandas as pd
 
-    graph = self.storage.load_graph()
-    rows = [
+    rows = self.storage.load_states_rich(self._history.history_id)
+    if not rows:
+        return pd.DataFrame(columns=[
+            "state_id", "timestamp", "branch_name",
+            "produced_by_step_id", "derived_from_state_id", "artifact_state_ids",
+        ])
+
+    df_rows = [
         {
-            "state_id": step["output_state_id"],
-            "timestamp": step.get("timestamp", "")[:19].replace("T", " "),
-            "branch": "",            # TODO: join analysis_branches once available
-            "func_name": step.get("func_name", "?"),
-            "operation_type": "unknown",   # TODO: join operation_types table
-            "has_artifact": False,          # TODO: join artifact_states table
+            "state_id": r["state_id"],
+            "timestamp": r["timestamp"][:19].replace("T", " "),
+            "branch_name": r["branch_name"],
+            "produced_by_step_id": r["produced_by_step_id"],
+            "derived_from_state_id": r["derived_from_state_id"],
+            "artifact_state_ids": ", ".join(r["artifact_state_ids"]),
         }
-        for step in graph["steps"]
+        for r in rows
     ]
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return df
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    df = pd.DataFrame(df_rows).sort_values("timestamp").reset_index(drop=True)
 
     try:
         from IPython import get_ipython

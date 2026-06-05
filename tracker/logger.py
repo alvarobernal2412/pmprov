@@ -43,7 +43,9 @@ def enable_logging(level: str | int = "WARNING", file: str | None = None) -> Non
         logging.FileHandler(file) if file else logging.StreamHandler(sys.stderr)
     )
     handler.setFormatter(logging.Formatter(fmt=_FMT, datefmt=_DATEFMT))
-    _logger.addHandler(handler)
+    if not any(type(h) is type(handler) and getattr(h, "baseFilename", None) == getattr(handler, "baseFilename", None)
+               for h in _logger.handlers):
+        _logger.addHandler(handler)
     _logger.setLevel(numeric)
 
 

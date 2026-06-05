@@ -208,6 +208,50 @@ class StorageBackend:
                       for r in steps],
         }
 
+    def load_states_rich(self, history_id: str) -> list[dict]:
+        """
+        Return all analysis states for a history with branch names and artifact state IDs.
+
+        Each entry contains:
+          state_id, timestamp, branch_name, produced_by_step_id,
+          derived_from_state_id, artifact_state_ids (list[str])
+        """
+        con = self._connect(read_only=True)
+        try:
+            rows = con.execute("""
+                SELECT s.state_id, s.timestamp, b.name AS branch_name,
+                       s.produced_by_step_id, s.derived_from_state_id
+                FROM analysis_states s
+                JOIN analysis_branches b ON b.branch_id = s.branch_id
+                WHERE s.history_id = ?
+                ORDER BY s.timestamp
+            """, _p(history_id)).fetchall()
+
+            art_rows = con.execute("""
+                SELECT ast.analysis_state_id, ast.artifact_state_id
+                FROM artifact_states ast
+                JOIN analysis_states s ON s.state_id = ast.analysis_state_id
+                WHERE s.history_id = ?
+            """, _p(history_id)).fetchall()
+        finally:
+            con.close()
+
+        art_map: dict[str, list[str]] = {}
+        for state_id, ast_id in art_rows:
+            art_map.setdefault(state_id, []).append(ast_id)
+
+        return [
+            {
+                "state_id": r[0],
+                "timestamp": r[1],
+                "branch_name": r[2],
+                "produced_by_step_id": r[3] or None,
+                "derived_from_state_id": r[4] or None,
+                "artifact_state_ids": art_map.get(r[0], []),
+            }
+            for r in rows
+        ]
+
     def load_state_detail(self, state_id: str) -> dict:
         """
         Return full metadata for a state: step, operation type, agent, environment,
@@ -276,6 +320,92 @@ class StorageBackend:
         return {
             "state_id": state_id,
             "step_id": step_id,
+            "timestamp": timestamp,
+            "branch_name": branch_name,
+            "func_name": func_name,
+            "raw_line": raw_line,
+            "param_fingerprint": param_fingerprint,
+            "operation": {"name": op_name, "type": op_type_name, "category": category_name or None},
+            "agent": {"agent_type": agent_type, "username": username},
+            "environment": {
+                "tool_version": tool_version,
+                "library_versions": json.loads(library_versions_json or "{}"),
+                "runtime": runtime,
+            },
+            "params": params,
+            "delta": delta,
+        }
+
+    def load_step_detail(self, step_id: str) -> dict:
+        """
+        Return full metadata for a step_id.
+
+        Returns the same shape as load_state_detail() but keyed by step_id.
+        Returns {} when step_id is not found.
+        """
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute("""
+                SELECT s.step_id, s.output_state_id, s.func_name, s.raw_line, s.timestamp,
+                       s.param_fingerprint,
+                       o.name AS op_name, ot.name AS op_type_name,
+                       COALESCE(sc.name, '') AS category_name,
+                       ag.agent_type, ag.username,
+                       e.tool_version, e.library_versions, e.runtime,
+                       b.name AS branch_name
+                FROM analysis_steps s
+                JOIN analysis_states st ON st.state_id = s.output_state_id
+                JOIN operations o ON o.operation_id = s.operation_id
+                JOIN operation_types ot ON ot.type_id = o.operation_type_id
+                LEFT JOIN step_categories sc ON sc.category_id = o.step_category_id
+                JOIN agents ag ON ag.agent_id = s.agent_id
+                JOIN runtime_environments e ON e.env_id = s.env_id
+                JOIN analysis_branches b ON b.branch_id = st.branch_id
+                WHERE s.step_id = ?
+            """, _p(step_id)).fetchone()
+
+            if row is None:
+                return {}
+
+            (step_id_r, output_state_id, func_name, raw_line, timestamp, param_fingerprint,
+             op_name, op_type_name, category_name, agent_type, username,
+             tool_version, library_versions_json, runtime, branch_name) = row
+
+            pvs = con.execute(
+                "SELECT param_id, value_type, value_json FROM parameter_values WHERE step_id = ?",
+                _p(step_id),
+            ).fetchall()
+
+            delta_row = con.execute(
+                """SELECT kind, mutation_type, modification_type, rows_delta,
+                          columns_added, columns_removed, dtype_changes
+                   FROM deltas WHERE step_id = ?""",
+                _p(step_id),
+            ).fetchone()
+
+        finally:
+            con.close()
+
+        params = [
+            {"param_id": r[0], "value_type": r[1], "value": json.loads(r[2])}
+            for r in pvs
+        ]
+
+        delta = None
+        if delta_row:
+            delta = {
+                "kind": delta_row[0],
+                "mutation_type": delta_row[1],
+                "modification_type": delta_row[2],
+                "rows_delta": delta_row[3],
+                "columns_added": json.loads(delta_row[4] or "[]"),
+                "columns_removed": json.loads(delta_row[5] or "[]"),
+                "dtype_changes": json.loads(delta_row[6] or "{}"),
+            }
+
+        return {
+            "step_id": step_id,
+            "output_state_id": output_state_id,
             "timestamp": timestamp,
             "branch_name": branch_name,
             "func_name": func_name,

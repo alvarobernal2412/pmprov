@@ -4,8 +4,6 @@ import pandas as pd
 
 @pytest.fixture
 def rt(tmp_path):
-    import matplotlib
-    matplotlib.use("Agg")
     from tracker.storage import StorageBackend
     from tracker.runtime import RuntimeTracker
     s = StorageBackend(db_path=tmp_path / "prov.db", artifact_dir=tmp_path / "art")
@@ -25,7 +23,8 @@ def rt(tmp_path):
 def test_list_states_returns_dataframe(rt):
     result = rt.list_states()
     assert hasattr(result, "columns"), "list_states() must return a pandas DataFrame"
-    required = {"state_id", "timestamp", "branch", "func_name", "operation_type", "has_artifact"}
+    required = {"state_id", "timestamp", "branch_name", "produced_by_step_id",
+                "derived_from_state_id", "artifact_state_ids"}
     assert required.issubset(set(result.columns)), f"Missing columns: {required - set(result.columns)}"
 
 

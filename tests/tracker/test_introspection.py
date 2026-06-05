@@ -138,8 +138,6 @@ def test_replay_pipeline_param_override_changes_output(rt, event_log):
 
 def test_show_artifact_lifecycle_runs_without_error(rt, event_log, monkeypatch):
     import tracker.visualizations  # noqa: F401
-    import matplotlib
-    matplotlib.use("Agg")
 
     rt.trace_step(func=lambda df: df.assign(x=1), func_name="enrich",
                   raw_line="df=enrich(df)", args=[event_log], kwargs={})

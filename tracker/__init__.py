@@ -37,6 +37,7 @@ Unregistered functions default to OperationType ``"unknown"``.
 
 from tracker.ast_rewriter import OMIT_FUNCTIONS
 from tracker.kernel_hooks import init_jupyter, init_marimo
+from tracker.logger import get_logger, enable_logging
 from tracker.operation_registry import operation_type, step_category
 from tracker.runtime import RuntimeTracker
 from tracker.storage import StorageBackend
@@ -66,6 +67,8 @@ __all__ = [
     "omit_functions",
     "operation_type",
     "step_category",
+    "get_logger",
+    "enable_logging",
     "RuntimeTracker",
     "StorageBackend",
 ]

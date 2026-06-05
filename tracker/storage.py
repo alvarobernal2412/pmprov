@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from tracker.logger import log_storage_error
+
 try:
     import duckdb as _duckdb
     _BACKEND = "duckdb"
@@ -175,7 +177,8 @@ class StorageBackend:
             else:
                 df.to_parquet(str(path))
             return str(path)
-        except Exception:
+        except Exception as e:
+            log_storage_error(e, method="save_artifact", node_id=node_id)
             return None
 
     # ------------------------------------------------------------------
@@ -450,6 +453,9 @@ class StorageBackend:
             con.execute("INSERT OR REPLACE INTO analysis_histories VALUES (?,?,?,?)",
                         _p(history.history_id, history.name or "", _now(), history.active_state_id or ""))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_history", history_id=history.history_id)
+            raise
         finally:
             con.close()
 
@@ -459,6 +465,9 @@ class StorageBackend:
             con.execute("INSERT OR REPLACE INTO analysis_branches VALUES (?,?,?,?)",
                         _p(branch.branch_id, branch.history_id, branch.name, branch.starts_at_state_id))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_branch", branch_id=branch.branch_id)
+            raise
         finally:
             con.close()
 
@@ -469,6 +478,9 @@ class StorageBackend:
                         _p(state.state_id, state.history_id, state.branch_id,
                            state.produced_by_step_id or "", state.derived_from_state_id or "", _now()))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_state", state_id=state.state_id)
+            raise
         finally:
             con.close()
 
@@ -481,6 +493,9 @@ class StorageBackend:
                    step.agent_id, step.env_id, step.operation_id,
                    func_name, raw_line or "", param_fingerprint or "", _now()))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_step", func_name=func_name)
+            raise
         finally:
             con.close()
 
@@ -494,6 +509,9 @@ class StorageBackend:
             con.execute("INSERT OR REPLACE INTO operations (operation_id, name, operation_type_id, step_category_id) VALUES (?,?,?,?)",
                         _p(op.operation_id, op.name, op.operation_type_id, getattr(op, "step_category_id", None)))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_operation", operation=op.name)
+            raise
         finally:
             con.close()
 
@@ -503,6 +521,9 @@ class StorageBackend:
             con.execute("INSERT OR REPLACE INTO agents VALUES (?,?,?,?)",
                         _p(agent.agent_id, history_id, agent.agent_type.value, getattr(agent, "username", "")))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_agent", agent_id=agent.agent_id)
+            raise
         finally:
             con.close()
 
@@ -513,6 +534,9 @@ class StorageBackend:
                         _p(env.env_id, history_id, env.tool_version,
                            json.dumps(env.library_versions), env.runtime or ""))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_env", env_id=env.env_id)
+            raise
         finally:
             con.close()
 
@@ -525,6 +549,9 @@ class StorageBackend:
                                pv.get("parameter_id", ""), pv["value_type"],
                                json.dumps(pv, default=str)))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_param_values")
+            raise
         finally:
             con.close()
 
@@ -539,6 +566,10 @@ class StorageBackend:
                            artifact_state.analysis_state_id, artifact_state.mime_type,
                            artifact_state.checksum, artifact_state.content_ref, artifact_state.size_bytes))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_artifact_records",
+                              artifact_state_id=artifact_state.artifact_state_id)
+            raise
         finally:
             con.close()
 
@@ -553,6 +584,9 @@ class StorageBackend:
                            json.dumps(delta.get("columns_removed", [])),
                            json.dumps(delta.get("dtype_changes", {}))))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_delta", step_id=step_id)
+            raise
         finally:
             con.close()
 
@@ -562,6 +596,9 @@ class StorageBackend:
             con.execute("UPDATE analysis_histories SET active_state_id=? WHERE history_id=?",
                         _p(active_state_id, history_id))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_update_history_active_state", history_id=history_id)
+            raise
         finally:
             con.close()
 
@@ -571,6 +608,9 @@ class StorageBackend:
             con.execute("INSERT OR REPLACE INTO pipelines VALUES (?,?,?,?)",
                         _p(pipeline_id, history_id, name, _now()))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_pipeline", pipeline_id=pipeline_id)
+            raise
         finally:
             con.close()
 
@@ -580,5 +620,8 @@ class StorageBackend:
             con.execute("INSERT OR REPLACE INTO pipeline_fragments VALUES (?,?,?,?)",
                         _p(fragment_id, pipeline_id, json.dumps(step_ids), position))
             _commit(con)
+        except Exception as e:
+            log_storage_error(e, method="_write_fragment", fragment_id=fragment_id)
+            raise
         finally:
             con.close()

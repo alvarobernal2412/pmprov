@@ -61,6 +61,7 @@ from models import (
 )
 from tracker.ast_rewriter import _is_omitted
 from tracker.delta_calculator import compute_delta
+from tracker.logger import log_trace_warning
 from tracker.operation_registry import lookup as _lookup_operation_type, lookup_category as _lookup_category
 from tracker.snapshot_engine import capture_snapshot
 from tracker.storage import StorageBackend
@@ -262,7 +263,8 @@ class RuntimeTracker:
                 key: capture_snapshot(val)
                 for key, val in zip(list(pre_snaps.keys()), all_input_vals)
             }
-        except Exception:
+        except Exception as e:
+            log_trace_warning("post-snapshot failed", step="snapshot", func_name=func_name, error=e)
             post_snap = {}
             post_input_snaps = {}
 
@@ -278,7 +280,8 @@ class RuntimeTracker:
             elif first_pre:
                 first_key = next(iter(pre_snaps))
                 delta = compute_delta(first_pre, post_input_snaps.get(first_key, {}))
-        except Exception:
+        except Exception as e:
+            log_trace_warning("delta computation failed", step="delta", func_name=func_name, error=e)
             delta = {"kind": "error"}
 
         # ---- 5. Parameter values + branch-divergence detection ---------------
@@ -304,10 +307,12 @@ class RuntimeTracker:
                                 self.storage.save_artifact_records_async(
                                     _input_art_obj, _input_ast_obj, self._history.history_id
                                 )
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+                        except Exception as e:
+                            log_trace_warning("input artifact record build failed",
+                                              step="input_artifact", func_name=func_name, error=e)
+        except Exception as e:
+            log_trace_warning("input DataFrame registration failed",
+                              step="input_artifact_loop", func_name=func_name, error=e)
 
         param_values: list[dict] = []
         try:
@@ -317,16 +322,21 @@ class RuntimeTracker:
             for k, v in kwargs.items():
                 pv = self._make_param_value(f"{func_name}:{k}", step_id, v)
                 param_values.append(pv.model_dump(mode="json"))
-        except Exception:
-            pass
+        except Exception as e:
+            log_trace_warning("parameter value serialisation failed",
+                              step="param_values", func_name=func_name, error=e)
 
         try:
             fp = _param_fingerprint(args, kwargs)
-        except Exception:
+        except Exception as e:
+            log_trace_warning("parameter fingerprinting failed, using random UUID",
+                              step="fingerprint", func_name=func_name, error=e)
             fp = str(uuid.uuid4())
         try:
             input_state_id = self._detect_and_apply_branch(func_name, fp)
-        except Exception:
+        except Exception as e:
+            log_trace_warning("branch detection failed, staying on current branch",
+                              step="branch_detection", func_name=func_name, error=e)
             input_state_id = self._current_state_id
 
         # ---- 6. Pydantic model assembly -------------------------------------
@@ -351,8 +361,9 @@ class RuntimeTracker:
                     artifact_records = self._build_artifact_records(
                         output, output_state_id, artifact_path
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    log_trace_warning("output artifact record build failed",
+                                      step="output_artifact", func_name=func_name, error=e)
 
         # ---- 8. Persist all entities ------------------------------------------------
         output_state = AnalysisState(

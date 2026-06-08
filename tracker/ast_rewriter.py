@@ -43,6 +43,13 @@ OMIT_FUNCTIONS: set[str] = {
     # Plotting display
     "show",         # plt.show(), fig.show()
     "savefig",
+    # Path / sys / OS system calls — never analysis operations
+    "cwd",
+    "mkdir",
+    "insert",   # sys.path.insert
+    "append",   # sys.path.append
+    "exists",   # path.exists()
+    "resolve",  # path.resolve()
     # IPython / Jupyter display helpers
     "display",
     "clear_output",
@@ -116,7 +123,34 @@ class ProvTrackTransformer(ast.NodeTransformer):
     functions within the cell are deliberately left untouched.
     """
 
-    _RUNTIME = "_provtrack_runtime"
+    # Runtime lookup expression used in generated code.
+    # We use __import__('tracker.kernel_hooks', fromlist=['_runtime'])._runtime
+    # rather than a bare name like _provtrack_runtime so the reference always
+    # resolves via Python's import system, regardless of the builtins dict that
+    # the executing env (Marimo AppScriptRunner, Jupyter, plain Python) provides.
+    _RUNTIME = "_provtrack_runtime"   # kept for Jupyter backward-compat only
+    _USE_IMPORT_LOOKUP = True         # emit import-based lookup instead
+
+    @staticmethod
+    def _runtime_node() -> ast.expr:
+        """AST node for ``__import__('tracker.kernel_hooks', fromlist=['_runtime'])._runtime``."""
+        return ast.Attribute(
+            value=ast.Call(
+                func=ast.Name(id="__import__", ctx=ast.Load()),
+                args=[ast.Constant(value="tracker.kernel_hooks")],
+                keywords=[
+                    ast.keyword(
+                        arg="fromlist",
+                        value=ast.List(
+                            elts=[ast.Constant(value="_runtime")],
+                            ctx=ast.Load(),
+                        ),
+                    )
+                ],
+            ),
+            attr="_runtime",
+            ctx=ast.Load(),
+        )
 
     def visit_Module(self, node: ast.Module) -> ast.Module:
         node.body = [self._maybe_wrap(stmt) for stmt in node.body]
@@ -167,7 +201,7 @@ class ProvTrackTransformer(ast.NodeTransformer):
 
         wrapped = ast.Call(
             func=ast.Attribute(
-                value=ast.Name(id=self._RUNTIME, ctx=ast.Load()),
+                value=self._runtime_node(),
                 attr="trace_step",
                 ctx=ast.Load(),
             ),

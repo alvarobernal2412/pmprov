@@ -1,60 +1,172 @@
 """Smoke tests for the Marimo integration path (kernel_hooks.py).
 
-The Marimo integration has never been tested end-to-end. These tests
-verify the pure-Python logic (_is_marimo_cell, _PATCHED guard) without
-running a live Marimo server.
+Tests cover the pure-Python logic of patch_marimo_ast_compile, _NoOpRuntime,
+and _MARIMO_PATCHED guard without requiring a live Marimo server.
 """
+import ast
 import builtins
 import pytest
-from tracker.kernel_hooks import _is_marimo_cell
+
+import tracker.kernel_hooks as kh
+from tracker.kernel_hooks import _NoOpRuntime, patch_marimo_ast_compile
 
 
-def test_cell_filename_detected():
-    assert _is_marimo_cell("<cell-1>") is True
-    assert _is_marimo_cell("<cell_abc>") is True
+# ---------------------------------------------------------------------------
+# _NoOpRuntime
+# ---------------------------------------------------------------------------
+
+def test_noop_runtime_passes_through():
+    noop = _NoOpRuntime()
+    result = noop.trace_step(
+        func=lambda x: x * 2,
+        func_name="double",
+        raw_line="y = double(x)",
+        args=[21],
+        kwargs={},
+    )
+    assert result == 42
 
 
-def test_normal_filename_rejected():
-    assert _is_marimo_cell("my_script.py") is False
-    assert _is_marimo_cell("<stdin>") is False
+def test_noop_runtime_forwards_kwargs():
+    noop = _NoOpRuntime()
+    result = noop.trace_step(
+        func=lambda a, b=0: a + b,
+        func_name="add",
+        raw_line="z = add(1, b=2)",
+        args=[1],
+        kwargs={"b": 2},
+    )
+    assert result == 3
 
 
-def test_marimo_keyword_in_filename_detected():
-    assert _is_marimo_cell("__marimo__something") is True
+# ---------------------------------------------------------------------------
+# patch_marimo_ast_compile — idempotency guard
+# ---------------------------------------------------------------------------
 
+def test_patch_applied_once(monkeypatch):
+    """patch_marimo_ast_compile must not wrap ast_compile more than once."""
+    try:
+        from marimo._ast import compiler as _mc
+    except ImportError:
+        pytest.skip("marimo not installed")
 
-def test_compile_patch_applied_once(tmp_path):
-    """init_marimo must not wrap builtins.compile more than once (_PATCHED guard).
-
-    init_marimo signature: (db_path, artifact_dir, agent_id, history_name, branch_name)
-    It creates its own StorageBackend internally.
-    """
-    from tracker.kernel_hooks import init_marimo
-    import tracker.kernel_hooks as kh
-
-    original_compile = builtins.compile
-    original_patched = kh._PATCHED
+    original_ast_compile = _mc.ast_compile
+    monkeypatch.setattr(kh, "_MARIMO_PATCHED", False)
 
     try:
-        kh._PATCHED = False
-        rt1 = init_marimo(
-            db_path=str(tmp_path / "prov.db"),
-            artifact_dir=str(tmp_path / "art"),
-            history_name="m1",
-        )
-        after_first = builtins.compile
+        patch_marimo_ast_compile()
+        after_first = _mc.ast_compile
 
-        # Second init_marimo must not add another wrapping layer
-        rt2 = init_marimo(
-            db_path=str(tmp_path / "prov.db"),
-            artifact_dir=str(tmp_path / "art"),
-            history_name="m2",
-        )
-        after_second = builtins.compile
+        patch_marimo_ast_compile()   # second call must be a no-op
+        after_second = _mc.ast_compile
 
         assert after_first is after_second, (
-            "builtins.compile was wrapped twice — _PATCHED guard is broken"
+            "ast_compile was wrapped twice — _MARIMO_PATCHED guard is broken"
         )
     finally:
-        builtins.compile = original_compile
-        kh._PATCHED = original_patched
+        _mc.ast_compile = original_ast_compile
+        kh._MARIMO_PATCHED = False
+
+
+# ---------------------------------------------------------------------------
+# patch_marimo_ast_compile — transformation behaviour
+# ---------------------------------------------------------------------------
+
+def test_patch_transforms_module(monkeypatch, tmp_path):
+    """The patched ast_compile should apply ProvTrackTransformer to ast.Module."""
+    try:
+        from marimo._ast import compiler as _mc
+    except ImportError:
+        pytest.skip("marimo not installed")
+
+    original_ast_compile = _mc.ast_compile
+    monkeypatch.setattr(kh, "_MARIMO_PATCHED", False)
+
+    try:
+        patch_marimo_ast_compile()
+
+        # A simple assignment with a Call — the transformer should wrap it.
+        code = "result = some_func(42)"
+        tree = ast.parse(code, "<unknown>", "exec",
+                         type_comments=False)
+
+        # Invoke the patched ast_compile with an ast.Module in exec mode.
+        _mc.ast_compile(tree, "<test>", "exec")
+
+        # After the call, tree.body[0] should have been rewritten so that the
+        # RHS is a Call to <runtime>.trace_step where <runtime> is the
+        # __import__-based lookup generated by ProvTrackTransformer.
+        stmt = tree.body[0]
+        assert isinstance(stmt, ast.Assign)
+        call = stmt.value
+        assert isinstance(call, ast.Call)
+        # The outer call should target <something>.trace_step
+        assert isinstance(call.func, ast.Attribute)
+        assert call.func.attr == "trace_step"
+        # The receiver should be an Attribute (_runtime) on a Call (__import__(...))
+        receiver = call.func.value
+        assert isinstance(receiver, ast.Attribute)
+        assert receiver.attr == "_runtime"
+        assert isinstance(receiver.value, ast.Call)
+        # The __import__ call should reference 'tracker.kernel_hooks'
+        import_call = receiver.value
+        assert isinstance(import_call.func, ast.Name)
+        assert import_call.func.id == "__import__"
+        assert isinstance(import_call.args[0], ast.Constant)
+        assert import_call.args[0].value == "tracker.kernel_hooks"
+    finally:
+        _mc.ast_compile = original_ast_compile
+        kh._MARIMO_PATCHED = False
+
+
+def test_patch_skips_eval_mode(monkeypatch):
+    """The patch must not transform ast.Expression (eval-mode) nodes."""
+    try:
+        from marimo._ast import compiler as _mc
+    except ImportError:
+        pytest.skip("marimo not installed")
+
+    original_ast_compile = _mc.ast_compile
+    monkeypatch.setattr(kh, "_MARIMO_PATCHED", False)
+
+    try:
+        patch_marimo_ast_compile()
+
+        expr_tree = ast.parse("some_func(42)", "<unknown>", "eval")
+        # eval produces ast.Expression, not ast.Module — must be left untouched.
+        _mc.ast_compile(expr_tree, "<test>", "eval")
+
+        assert isinstance(expr_tree, ast.Expression)
+        # The body of the Expression should be the original Call, not a trace_step wrapper.
+        call = expr_tree.body
+        assert isinstance(call, ast.Call)
+        assert not (
+            isinstance(call.func, ast.Attribute) and call.func.attr == "trace_step"
+        ), "eval-mode expression was incorrectly transformed"
+    finally:
+        _mc.ast_compile = original_ast_compile
+        kh._MARIMO_PATCHED = False
+
+
+# ---------------------------------------------------------------------------
+# init_marimo — sets builtins._provtrack_runtime
+# ---------------------------------------------------------------------------
+
+def test_init_marimo_installs_runtime(tmp_path):
+    """init_marimo() should replace _NoOpRuntime with the real RuntimeTracker."""
+    from tracker.kernel_hooks import init_marimo
+    from tracker.runtime import RuntimeTracker
+
+    builtins._provtrack_runtime = _NoOpRuntime()  # type: ignore[attr-defined]
+
+    rt = init_marimo(
+        db_path=str(tmp_path / "prov.db"),
+        artifact_dir=str(tmp_path / "art"),
+        history_name="test_session",
+    )
+
+    assert builtins._provtrack_runtime is rt
+    assert isinstance(rt, RuntimeTracker)
+
+    # Cleanup
+    del builtins._provtrack_runtime

@@ -154,11 +154,11 @@ class StorageBackend:
     def update_history_active_state_async(self, history_id: str, active_state_id: str) -> None:
         self._executor.submit(self._update_history_active_state, history_id, active_state_id)
 
-    def save_pipeline_async(self, pipeline_id: str, history_id: str, name: str) -> None:
-        self._executor.submit(self._write_pipeline, pipeline_id, history_id, name)
+    def save_pipeline_sync(self, pipeline_id: str, history_id: str, name: str) -> None:
+        self._executor.submit(self._write_pipeline, pipeline_id, history_id, name).result()
 
-    def save_fragment_async(self, fragment_id: str, pipeline_id: str, step_ids: list, position: int) -> None:
-        self._executor.submit(self._write_fragment, fragment_id, pipeline_id, step_ids, position)
+    def save_fragment_sync(self, fragment_id: str, pipeline_id: str, step_ids: list, position: int) -> None:
+        self._executor.submit(self._write_fragment, fragment_id, pipeline_id, step_ids, position).result()
 
     # ------------------------------------------------------------------
     # Artifact persistence (synchronous)
@@ -180,6 +180,58 @@ class StorageBackend:
         except Exception as e:
             log_storage_error(e, component="save_artifact", node_id=node_id)
             return None
+
+    def load_artifact(self, artifact_state_id: str) -> Any:
+        """
+        Load the object stored for an artifact_state_id.
+
+        Dispatch is based on the recorded mime_type:
+          - application/vnd.apache.parquet → pandas DataFrame (currently the only
+            implemented serialisation format)
+          - anything else → NotImplementedError (future: process models, rulesets, …)
+
+        Returns None when the artifact_state_id is not found in the DB.
+        """
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT mime_type, content_ref FROM artifact_states WHERE artifact_state_id = ?",
+                _p(artifact_state_id),
+            ).fetchone()
+        finally:
+            con.close()
+
+        if not row or not row[1]:
+            return None
+
+        mime_type, content_ref = row
+
+        if mime_type == "application/vnd.apache.parquet":
+            try:
+                import pandas as pd
+                return pd.read_parquet(content_ref)
+            except Exception as e:
+                log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
+                return None
+
+        # Future artifact types (process models, rulesets, etc.) would be handled here.
+        raise NotImplementedError(
+            f"load_artifact: no deserialiser implemented for mime_type='{mime_type}' "
+            f"(artifact_state_id={artifact_state_id}). "
+            "Add a handler here when support for this type is introduced."
+        )
+
+    def load_output_artifact_state_id(self, output_state_id: str) -> Optional[str]:
+        """Return the artifact_state_id produced by the given output_state_id, or None."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT artifact_state_id FROM artifact_states WHERE analysis_state_id = ? LIMIT 1",
+                _p(output_state_id),
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            con.close()
 
     # ------------------------------------------------------------------
     # Read API
@@ -532,6 +584,18 @@ class StorageBackend:
         finally:
             con.close()
         return row[0] if row else None
+
+    def load_pipeline_by_name(self, name: str) -> Optional[str]:
+        """Return the pipeline_id for the first pipeline with the given name, or None."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT pipeline_id FROM pipelines WHERE name = ? ORDER BY created_at DESC LIMIT 1",
+                _p(name),
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            con.close()
 
     def load_pipeline_steps(self, pipeline_id: str) -> list[dict]:
         """Return step records for a pipeline in fragment order."""

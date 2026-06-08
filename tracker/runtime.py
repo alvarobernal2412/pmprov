@@ -322,6 +322,27 @@ class RuntimeTracker:
             for k, v in kwargs.items():
                 pv = self._make_param_value(f"{func_name}:{k}", step_id, v)
                 param_values.append(pv.model_dump(mode="json"))
+            # For bound methods (e.g. case_log.apply(...)), record the receiver object
+            # so replay can reconstruct the method call without losing the DataFrame target.
+            if hasattr(func, "__self__") and func.__self__ is not None:
+                receiver = func.__self__
+                if type(receiver).__name__ == "DataFrame" and id(receiver) not in self._artifact_state_registry:
+                    _recv_state_id = _uid()
+                    _recv_path = self.storage.save_artifact(_recv_state_id, receiver)
+                    if _recv_path:
+                        try:
+                            _recv_recs = self._build_artifact_records(receiver, _recv_state_id, _recv_path)
+                            _recv_art = _recv_recs.get("artifact_obj")
+                            _recv_ast = _recv_recs.get("artifact_state_obj")
+                            if _recv_ast:
+                                self.storage.save_artifact_records_async(
+                                    _recv_art, _recv_ast, self._history.history_id
+                                )
+                        except Exception as e:
+                            log_trace_warning("receiver artifact record build failed",
+                                              step="receiver_artifact", func_name=func_name, error=e)
+                pv = self._make_param_value(f"{func_name}:__receiver__", step_id, receiver)
+                param_values.append(pv.model_dump(mode="json"))
         except Exception as e:
             log_trace_warning("parameter value serialisation failed",
                               step="param_values", func_name=func_name, error=e)
@@ -434,9 +455,9 @@ class RuntimeTracker:
     def create_pipeline(self, name: str, step_ids: list[str]) -> str:
         """Record a named Pipeline covering the given step_ids in order. Returns pipeline_id."""
         pipeline_id = _uid()
-        self.storage.save_pipeline_async(pipeline_id, self._history.history_id, name)
+        self.storage.save_pipeline_sync(pipeline_id, self._history.history_id, name)
         fragment_id = _uid()
-        self.storage.save_fragment_async(fragment_id, pipeline_id, step_ids, position=0)
+        self.storage.save_fragment_sync(fragment_id, pipeline_id, step_ids, position=0)
         return pipeline_id
 
     # ------------------------------------------------------------------

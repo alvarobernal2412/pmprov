@@ -101,9 +101,25 @@ def _replay_state(self: "RuntimeTracker", state_id: str) -> Any:
 
     # Reconstruct args from stored parameter values
     reconstructed_args: list[Any] = []
+    receiver: Any = None
     for pv in params:
+        param_id = pv.get("param_id", "")
+        suffix = param_id.split(":", 1)[1] if ":" in param_id else param_id
         value_type = pv["value_type"]
         value_data = pv["value"]
+
+        if suffix == "__receiver__":
+            if value_type == "artifact_state_ref":
+                ast_id = value_data.get("artifact_state_id")
+                if ast_id:
+                    path = self.storage.load_artifact_path(ast_id)
+                    if path:
+                        try:
+                            import pandas as pd
+                            receiver = pd.read_parquet(path)
+                        except Exception:
+                            pass
+            continue
 
         if value_type == "scalar":
             reconstructed_args.append(value_data.get("value"))
@@ -124,12 +140,20 @@ def _replay_state(self: "RuntimeTracker", state_id: str) -> Any:
     # All reconstructed args are passed positionally; replay of calls with
     # keyword-only args may produce different results.
 
-    if not reconstructed_args:
+    if not reconstructed_args and receiver is None:
         return None
 
     func = self._replay_func_registry.get(func_name)
     if func is None:
         return None
+
+    # If the original call was a bound method, re-bind to the reconstructed receiver.
+    if receiver is not None:
+        method_name = func_name.rsplit(".", 1)[-1]
+        bound_func = getattr(receiver, method_name, None)
+        if bound_func is None:
+            return None
+        func = bound_func
 
     return self.trace_step(
         func=func,
@@ -138,6 +162,79 @@ def _replay_state(self: "RuntimeTracker", state_id: str) -> Any:
         args=reconstructed_args,
         kwargs={},
     )
+
+
+def _reconstruct_value(param: dict, storage: Any, replacements: dict) -> Any:
+    """Reconstruct a single runtime value from a stored ParameterValue record."""
+    vtype = param["value_type"]
+    val = param["value"]
+    if vtype == "scalar":
+        return val.get("value")
+    if vtype == "artifact_state_ref":
+        ast_id = val.get("artifact_state_id")
+        # Prefer a replacement produced earlier in this replay (new input data)
+        if ast_id in replacements:
+            return replacements[ast_id]
+        return storage.load_artifact(ast_id)
+    if vtype in ("list", "dict"):
+        return val.get("value")
+    # lambda_function: source code only — caller must supply via func_map/param_overrides
+    return None
+
+
+def _reconstruct_args(
+    params: list[dict],
+    func_name: str,
+    initial_input: Any,
+    is_first_step: bool,
+    param_overrides: dict,
+    storage: Any,
+    replacements: dict,
+) -> tuple[list, dict, Any]:
+    """
+    Rebuild positional args and kwargs for a step from its stored ParameterValue records.
+
+    param_id format:  "<func_name>:arg_<i>"      →  positional index i
+                      "<func_name>:<name>"        →  keyword argument
+                      "<func_name>:__receiver__"  →  bound-method receiver (returned separately)
+
+    Returns (args, kwargs, receiver) where receiver is the reconstructed object the
+    method was called on, or None for standalone function calls.
+    """
+    positional: dict[int, Any] = {}
+    keyword: dict[str, Any] = {}
+    receiver: Any = None
+
+    for p in params:
+        suffix = p["param_id"].split(":", 1)[1] if ":" in p["param_id"] else p["param_id"]
+        if suffix == "__receiver__":
+            receiver = _reconstruct_value(p, storage, replacements)
+            continue
+        if suffix.startswith("arg_"):
+            try:
+                positional[int(suffix[4:])] = _reconstruct_value(p, storage, replacements)
+            except ValueError:
+                pass
+        else:
+            keyword[suffix] = _reconstruct_value(p, storage, replacements)
+
+    # Build ordered positional list
+    args: list = []
+    if positional:
+        for i in range(max(positional) + 1):
+            args.append(positional.get(i))
+
+    # Replace the first DataFrame positional arg with initial_input in the first step
+    if is_first_step and initial_input is not None:
+        if args:
+            args[0] = initial_input
+        else:
+            args = [initial_input]
+
+    # Apply analyst param_overrides as kwargs
+    keyword.update(param_overrides)
+
+    return args, keyword, receiver
 
 
 def _replay_pipeline(
@@ -156,7 +253,9 @@ def _replay_pipeline(
         UUID returned by rt.create_pipeline().
     func_map:
         Mapping of func_name → callable. Required because function objects
-        cannot be reconstructed from stored names alone.
+        cannot be reconstructed from stored names alone. For bound-method steps
+        (e.g. ``case_log.apply``), supply the already-bound method so the correct
+        receiver is used: ``{"case_log.apply": new_case_log.apply}``.
     initial_input:
         The DataFrame to feed as the first argument of the first step.
     param_overrides:

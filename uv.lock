@@ -595,6 +595,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "ipywidgets" },
+    { name = "matplotlib" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -634,6 +635,7 @@ requires-dist = [
     { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "ipywidgets", marker = "extra == 'full'", specifier = "==8.1.8" },
     { name = "ipywidgets", marker = "extra == 'widgets'", specifier = "==8.1.8" },
+    { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "matplotlib", marker = "extra == 'full'", specifier = "==3.10.9" },
     { name = "matplotlib", marker = "extra == 'graph'", specifier = "==3.10.9" },
     { name = "networkx", marker = "extra == 'full'", specifier = "==3.6.1" },

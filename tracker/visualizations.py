@@ -192,7 +192,8 @@ def _show_graph(
             fig.savefig(save_path, format="svg", bbox_inches="tight")
 
         plt.tight_layout()
-        plt.show()
+        plt.close(fig)
+        return fig
 
     except Exception as exc:
         print(f"show_graph() rendering error: {exc}")

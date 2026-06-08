@@ -24,6 +24,13 @@ OMIT_FUNCTIONS: set[str] = {
     "setattr",
     "vars",
     "dir",
+    # Dict / object retrieval — never a data transformation
+    "get",
+    "items",
+    "keys",
+    "values",
+    "copy",
+    "update",
     # DataFrame / Series display methods
     "head",
     "tail",
@@ -39,17 +46,33 @@ OMIT_FUNCTIONS: set[str] = {
     # IPython / Jupyter display helpers
     "display",
     "clear_output",
-    # ProvTrack's own inspection / configuration methods (avoid self-tracking)
+    # ProvTrack's own inspection / configuration / replay methods
     "show_graph",
     "show_graph_widget",
+    "show_artifact_lifecycle",
     "list_states",
+    "list_branches",
     "load_graph",
     "to_networkx",
     "checkout",
+    "describe_state",
+    "describe_step",
+    "replay_state",
+    "replay_pipeline",
+    "create_pipeline",
+    "load_pipeline_steps",
+    "compare_states",
+    "compare_states_abstracted",
+    "compare_histories",
+    "register_abstraction",
     "operation_type",
+    "step_category",
     "omit_functions",
+    "enable_logging",
+    "get_logger",
     "init_jupyter",
     "init_marimo",
+    "settle",
 }
 
 

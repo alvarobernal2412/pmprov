@@ -33,8 +33,13 @@ def test_list_states_has_rows(rt):
     assert len(result) >= 1, "list_states() must have at least 1 row after one trace_step"
 
 
-def test_show_graph_does_not_raise(rt, tmp_path):
-    rt.show_graph(save_path=str(tmp_path / "graph.svg"))
+def test_show_graph_renders_svg(rt, tmp_path):
+    import matplotlib.pyplot as plt
+    save_path = tmp_path / "graph.svg"
+    rt.show_graph(save_path=str(save_path))
+    assert save_path.exists(), "show_graph() must produce an SVG file — text fallback means matplotlib/networkx are missing or broken"
+    assert save_path.stat().st_size > 0, "SVG file must be non-empty"
+    plt.close("all")
 
 
 def test_to_networkx_returns_digraph(rt):

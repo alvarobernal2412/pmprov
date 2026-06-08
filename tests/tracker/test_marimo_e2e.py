@@ -14,9 +14,9 @@ import ast
 import dis
 import io
 import os
+import os.path
 import subprocess
 import sys
-import tempfile
 import time
 
 import pytest
@@ -43,12 +43,19 @@ def _compile(code: str, cell_id: str = "cell"):
 # 1. Patch fires in a fresh subprocess (simulates kernel startup)
 # ---------------------------------------------------------------------------
 
-def test_sitecustomize_patches_ast_compile_in_subprocess():
-    """In every fresh Python process, sitecustomize.py patches ast_compile."""
+def test_sitecustomize_patches_ast_compile_in_subprocess(tmp_path):
+    """sitecustomize.py in PYTHONPATH patches ast_compile in a fresh subprocess."""
+    sc = tmp_path / "sitecustomize.py"
+    sc.write_text(
+        "from tracker.kernel_hooks import patch_marimo_ast_compile\n"
+        "patch_marimo_ast_compile()\n"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(tmp_path) + os.pathsep + env.get("PYTHONPATH", "")
     result = subprocess.run(
         [sys.executable, "-c",
          "from marimo._ast import compiler as mc; print(mc.ast_compile.__name__)"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=env,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "_patched_ast_compile"

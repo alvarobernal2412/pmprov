@@ -1,10 +1,10 @@
-import pytest
+﻿import pytest
 import pandas as pd
 
 
 @pytest.fixture
 def rt(tmp_path):
-    from tracker.storage import StorageBackend
+    from tracker.storage import DuckDBSQLiteBackend as StorageBackend
     from tracker.runtime import RuntimeTracker
     s = StorageBackend(db_path=tmp_path / "prov.db", artifact_dir=tmp_path / "art")
     tracker = RuntimeTracker(storage=s, session_id="viz")
@@ -47,3 +47,4 @@ def test_to_networkx_returns_digraph(rt):
     G = rt.storage.to_networkx()
     assert isinstance(G, nx.DiGraph)
     assert G.number_of_nodes() >= 1
+

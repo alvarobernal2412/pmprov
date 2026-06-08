@@ -31,7 +31,7 @@ from typing import Optional
 
 from tracker.ast_rewriter import ProvTrackTransformer
 from tracker.runtime import RuntimeTracker
-from tracker.storage import StorageBackend
+from tracker.storage import DuckDBSQLiteBackend
 
 
 # ------------------------------------------------------------------
@@ -85,7 +85,7 @@ def init_jupyter(
             "Call init_jupyter() from inside a running Jupyter notebook."
         )
 
-    storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
+    storage = DuckDBSQLiteBackend(db_path=db_path, artifact_dir=artifact_dir)
     runtime = RuntimeTracker(
         storage=storage,
         session_id=str(uuid.uuid4()),
@@ -147,7 +147,7 @@ def init_marimo(
     re-executions within the same session can be identified and parent-child
     links in the edges table map directly onto Marimo's execution graph.
     """
-    storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
+    storage = DuckDBSQLiteBackend(db_path=db_path, artifact_dir=artifact_dir)
     session_id = str(uuid.uuid4())
     runtime = RuntimeTracker(
         storage=storage,

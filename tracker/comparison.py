@@ -35,22 +35,12 @@ def _compare_states(
     import pandas as pd
 
     def _load(state_id: str):
-        path = self.storage.artifact_dir / f"{state_id}.parquet"
-        if path.exists():
-            return pd.read_parquet(str(path))
-        try:
-            con = self.storage._connect(read_only=True)
-            try:
-                row = con.execute(
-                    "SELECT content_ref FROM artifact_states WHERE analysis_state_id = ?",
-                    [state_id],
-                ).fetchone()
-            finally:
-                con.close()
-            if row and row[0] and Path(row[0]).exists():
-                return pd.read_parquet(row[0])
-        except Exception:
-            pass
+        ast_id = self.storage.load_output_artifact_state_id(state_id)
+        if not ast_id:
+            return None
+        content_ref = self.storage.load_artifact_path(ast_id)
+        if content_ref and Path(content_ref).exists():
+            return pd.read_parquet(content_ref)
         return None
 
     df_a = _load(state_id_a)
@@ -208,25 +198,12 @@ def _apply_abstractions(self: "RuntimeTracker", state_id: str) -> None:
     """
     import pandas as pd
 
-    path = self.storage.artifact_dir / f"{state_id}.parquet"
-    if not path.exists():
-        try:
-            con = self.storage._connect(read_only=True)
-            try:
-                row = con.execute(
-                    "SELECT content_ref FROM artifact_states WHERE analysis_state_id = ?",
-                    [state_id],
-                ).fetchone()
-            finally:
-                con.close()
-            if row and row[0] and Path(row[0]).exists():
-                path = Path(row[0])
-            else:
-                self._abstraction_cache[state_id] = {}
-                return
-        except Exception:
-            self._abstraction_cache[state_id] = {}
-            return
+    ast_id = self.storage.load_output_artifact_state_id(state_id)
+    content_ref = self.storage.load_artifact_path(ast_id) if ast_id else None
+    if not content_ref or not Path(content_ref).exists():
+        self._abstraction_cache[state_id] = {}
+        return
+    path = Path(content_ref)
 
     try:
         df = pd.read_parquet(str(path))

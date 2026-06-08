@@ -1,7 +1,7 @@
-"""Tests for compare_states and compare_histories."""
+﻿"""Tests for compare_states and compare_histories."""
 import pytest
 import pandas as pd
-from tracker.storage import StorageBackend
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
 from tracker.runtime import RuntimeTracker
 import tracker.comparison  # noqa: F401
 
@@ -176,3 +176,4 @@ def test_register_abstraction_overwrite(rt, event_log):
     settle(rt)
     rt.apply_abstractions(sid)
     assert rt._abstraction_cache[sid]["x"] == 2
+

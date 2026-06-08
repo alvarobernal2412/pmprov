@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from tracker.logger import log_storage_error
+from tracker.storage_protocol import StorageBackend  # noqa: F401 — re-exported as the public type
 
 try:
     import duckdb as _duckdb
@@ -69,12 +70,15 @@ CREATE TABLE IF NOT EXISTS step_categories (category_id VARCHAR PRIMARY KEY, nam
 """
 
 
-class StorageBackend:
+class DuckDBSQLiteBackend:
     """
-    Thin async façade over DuckDB / SQLite + Parquet.
+    Concrete StorageBackend implementation over DuckDB / SQLite + Parquet.
 
     All DB writes are serialised through a single background thread so the
     notebook's execution thread is never blocked by I/O.
+
+    Satisfies the StorageBackend protocol — pass this wherever StorageBackend
+    is accepted. To swap to a different DB, implement StorageBackend instead.
     """
 
     def __init__(

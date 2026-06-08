@@ -1,7 +1,7 @@
-"""Tests for RuntimeTracker introspection methods."""
+﻿"""Tests for RuntimeTracker introspection methods."""
 import pytest
 import pandas as pd
-from tracker.storage import StorageBackend
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
 from tracker.runtime import RuntimeTracker
 import tracker.introspection  # noqa: F401 — patches methods onto RuntimeTracker
 
@@ -148,3 +148,4 @@ def test_show_artifact_lifecycle_runs_without_error(rt, event_log, monkeypatch):
         rt.show_artifact_lifecycle(state_id)
     except Exception as exc:
         pytest.fail(f"show_artifact_lifecycle raised: {exc}")
+

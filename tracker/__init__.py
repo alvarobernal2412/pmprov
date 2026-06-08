@@ -40,7 +40,7 @@ from tracker.kernel_hooks import init_jupyter, init_marimo
 from tracker.logger import get_logger, enable_logging
 from tracker.operation_registry import operation_type, step_category
 from tracker.runtime import RuntimeTracker
-from tracker.storage import StorageBackend
+from tracker.storage import DuckDBSQLiteBackend, StorageBackend
 import tracker.visualizations  # noqa: F401 — patches show_graph / show_graph_widget onto RuntimeTracker
 import tracker.introspection  # noqa: F401 — patches describe_state / list_branches onto RuntimeTracker
 import tracker.comparison  # noqa: F401 — patches compare_states / compare_histories onto RuntimeTracker
@@ -71,4 +71,5 @@ __all__ = [
     "enable_logging",
     "RuntimeTracker",
     "StorageBackend",
+    "DuckDBSQLiteBackend",
 ]

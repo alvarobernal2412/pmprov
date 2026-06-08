@@ -1,8 +1,8 @@
-"""Tests for StorageBackend read helpers added in Task 1."""
+﻿"""Tests for StorageBackend read helpers added in Task 1."""
 import json
 import pytest
 import pandas as pd
-from tracker.storage import StorageBackend
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
 from tracker.runtime import RuntimeTracker
 
 
@@ -81,3 +81,4 @@ def test_load_branches_shows_divergence_point_on_new_branch(rt, event_log):
     exp = next((b for b in branches if b["name"] == "experiment"), None)
     assert exp is not None
     assert exp["divergence_point_id"] == fork_state
+

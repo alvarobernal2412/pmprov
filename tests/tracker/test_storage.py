@@ -1,5 +1,5 @@
-import pytest
-from tracker.storage import StorageBackend
+﻿import pytest
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
 
 @pytest.fixture
 def backend(tmp_path):
@@ -39,3 +39,4 @@ def test_load_graph_returns_states_and_steps_keys(backend):
     graph = backend.load_graph()
     assert "states" in graph and "steps" in graph
     assert "nodes" not in graph and "edges" not in graph
+

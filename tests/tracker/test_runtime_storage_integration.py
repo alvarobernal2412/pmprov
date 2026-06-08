@@ -1,6 +1,6 @@
-import pandas as pd
+﻿import pandas as pd
 import pytest
-from tracker.storage import StorageBackend
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
 from tracker.runtime import RuntimeTracker
 
 @pytest.fixture
@@ -29,3 +29,4 @@ def test_load_graph_keys(rt):
     graph = rt.storage.load_graph()
     assert "states" in graph and "steps" in graph
     assert "nodes" not in graph and "edges" not in graph
+

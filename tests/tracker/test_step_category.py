@@ -1,7 +1,7 @@
-"""Tests for StepCategory registration, storage, and retrieval via load_state_detail."""
+﻿"""Tests for StepCategory registration, storage, and retrieval via load_state_detail."""
 import pytest
 import pandas as pd
-from tracker.storage import StorageBackend
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
 from tracker.runtime import RuntimeTracker
 from tracker.operation_registry import step_category, lookup_category
 
@@ -61,3 +61,4 @@ def test_step_category_exposed_in_load_state_detail(rt, event_log):
 
     detail = rt.storage.load_state_detail(rt._current_state_id)
     assert detail["operation"]["category"] == "conformance_checking"
+

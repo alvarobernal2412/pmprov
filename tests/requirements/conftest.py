@@ -1,7 +1,7 @@
-"""Shared fixtures for acceptance-criteria tests."""
+﻿"""Shared fixtures for acceptance-criteria tests."""
 import pytest
 import pandas as pd
-from tracker.storage import StorageBackend
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
 from tracker.runtime import RuntimeTracker
 
 
@@ -26,3 +26,4 @@ def event_log():
 def settle(rt):
     """Wait for all async DB writes to complete."""
     rt.storage._executor.submit(lambda: None).result()
+

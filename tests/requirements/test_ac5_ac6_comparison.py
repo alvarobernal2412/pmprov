@@ -1,10 +1,10 @@
-"""
+﻿"""
 R5 – Comparison of Histories (AC 5.1, 5.2)
 R6 – Comparison of States (AC 6.1, 6.2, 6.3)
 """
 import pytest
 import pandas as pd
-from tracker.storage import StorageBackend
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
 from tracker.runtime import RuntimeTracker
 import tracker.comparison  # noqa: F401
 
@@ -120,3 +120,4 @@ def test_ac6_3_abstracted_comparison(rt, event_log):
     assert result["row_count"]["a"] == 2
     assert result["row_count"]["b"] == 2
     assert "summary" in result
+

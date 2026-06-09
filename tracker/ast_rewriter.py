@@ -72,6 +72,7 @@ OMIT_FUNCTIONS: set[str] = {
     "compare_states_abstracted",
     "compare_histories",
     "register_abstraction",
+    "apply_abstractions",
     "operation_type",
     "step_category",
     "omit_functions",
@@ -80,6 +81,26 @@ OMIT_FUNCTIONS: set[str] = {
     "init_jupyter",
     "init_marimo",
     "settle",
+    # Storage read-back methods — never analyst operations
+    "load_artifact",
+    "load_output_artifact_state_id",
+    "load_artifact_lifecycle",
+    "load_artifact_path",
+    "load_state_detail",
+    "load_step_detail",
+    "load_states_rich",
+    "load_branches",
+    "load_pipeline_by_name",
+    # DB / connection primitives — never analyst operations
+    "_connect",
+    "execute",
+    "fetchall",
+    "fetchone",
+    "close",
+    # stdlib helpers that appear in notebooks but are not analysis steps
+    "mkdtemp",
+    "submit",
+    "result",
 }
 
 

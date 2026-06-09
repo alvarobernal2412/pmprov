@@ -17,8 +17,6 @@ import os
 import os.path
 import subprocess
 import sys
-import time
-
 import pytest
 
 pytest.importorskip("marimo")
@@ -117,7 +115,7 @@ def test_provenance_recorded_after_exec(marimo_session, tmp_path):
     assert len(glbls["df"]) == 3
 
     # Allow async DB writes to flush
-    time.sleep(0.5)
+    rt.storage._executor.submit(lambda: None).result()
 
     graph = rt.storage.load_graph(rt._history.history_id)
     steps = graph["steps"]
@@ -141,7 +139,7 @@ def test_func_name_uses_call_site_expression(marimo_session):
 
     exec(cell.body, glbls)  # noqa: S102
 
-    time.sleep(0.5)
+    rt.storage._executor.submit(lambda: None).result()
 
     graph = rt.storage.load_graph(rt._history.history_id)
     steps = graph["steps"]
@@ -182,7 +180,7 @@ def test_multiple_cells_record_multiple_steps(marimo_session):
     ]):
         exec(_compile(code, f"c{i}").body, glbls)  # noqa: S102
 
-    time.sleep(0.5)
+    rt.storage._executor.submit(lambda: None).result()
 
     graph = rt.storage.load_graph(rt._history.history_id)
     assert len(graph["steps"]) == 3

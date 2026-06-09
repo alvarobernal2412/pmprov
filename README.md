@@ -130,6 +130,16 @@ uv sync --all-extras --dev
 uv run pytest
 ```
 
+## Git hooks (optional)
+
+Enforces the test suite and conventional commit format (≤ 45 chars) on every commit:
+
+```bash
+uv run pre-commit install && uv run pre-commit install --hook-type commit-msg
+```
+
+Skip this step if you prefer to run checks manually.
+
 ---
 
 ## Contributing

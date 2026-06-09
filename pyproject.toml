@@ -33,6 +33,8 @@ full = ["duckdb==1.5.3", "pyarrow==24.0.0", "networkx==3.6.1", "matplotlib==3.10
 [dependency-groups]
 dev = [
     "pytest==9.0.3",
+    "pre-commit>=4.0",
+    "networkx==3.6.1",
 ]
 
 [tool.setuptools.packages.find]

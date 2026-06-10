@@ -194,20 +194,19 @@ def _apply_abstractions(self: "RuntimeTracker", state_id: str) -> None:
     """
     Run all registered abstraction functions against the artifact for *state_id*
     and cache results in ``rt._abstraction_cache[state_id]``.
-    Silently skips when the state has no Parquet artifact.
+    Silently skips when the state has no loadable artifact.
     """
-    import pandas as pd
-
     ast_id = self.storage.load_output_artifact_state_id(state_id)
-    content_ref = self.storage.load_artifact_path(ast_id) if ast_id else None
-    if not content_ref or not Path(content_ref).exists():
+    if not ast_id:
         self._abstraction_cache[state_id] = {}
         return
-    path = Path(content_ref)
 
     try:
-        df = pd.read_parquet(str(path))
+        df = self.storage.load_artifact(ast_id)
     except Exception:
+        df = None
+
+    if df is None:
         self._abstraction_cache[state_id] = {}
         return
 

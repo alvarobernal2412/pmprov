@@ -168,11 +168,19 @@ class DuckDBSQLiteBackend:
     # Artifact persistence (synchronous)
     # ------------------------------------------------------------------
 
-    def save_artifact(self, node_id: str, df: Any) -> Optional[str]:
-        """
-        Write *df* to ``<artifact_dir>/<node_id>.parquet``.
-        Returns the path string, or None if writing fails.
-        """
+    def save_artifact(self, node_id: str, obj: Any, *, kind: str = "dataframe",
+                      parent_state_id: str = "",
+                      parent_artifact_state_id: str = "") -> Optional[str]:
+        """Persist *obj* to disk. Returns the file path, or None on failure."""
+        if kind == "figure":
+            return self._save_plotly_figure(node_id, obj)
+        if kind == "filter_index":
+            return self._save_filter_index(node_id, obj, parent_state_id,
+                                           parent_artifact_state_id=parent_artifact_state_id)
+        return self._save_dataframe(node_id, obj)
+
+    def _save_dataframe(self, node_id: str, df: Any) -> Optional[str]:
+        """Write *df* to ``<artifact_dir>/<node_id>.parquet``."""
         path = self.artifact_dir / f"{node_id}.parquet"
         try:
             module = type(df).__module__ or ""
@@ -183,6 +191,35 @@ class DuckDBSQLiteBackend:
             return str(path)
         except Exception as e:
             log_storage_error(e, component="save_artifact", node_id=node_id)
+            return None
+
+    def _save_plotly_figure(self, node_id: str, fig: Any) -> Optional[str]:
+        """Write a Plotly figure as ``<artifact_dir>/<node_id>.plotly.json``."""
+        try:
+            import plotly.io as pio
+            path = self.artifact_dir / f"{node_id}.plotly.json"
+            with open(str(path), "w", encoding="utf-8") as f:
+                f.write(pio.to_json(fig))
+            return str(path)
+        except Exception as e:
+            log_storage_error(e, method="_save_plotly_figure", node_id=node_id)
+            return None
+
+    def _save_filter_index(self, node_id: str, df: Any, parent_state_id: str,
+                           *, parent_artifact_state_id: str = "") -> Optional[str]:
+        """Write ``<node_id>.filter.json`` = {parent_state_id, index}. No Parquet written."""
+        try:
+            index_values = df.index.tolist()
+            safe = [v if isinstance(v, (int, float, str, bool)) else str(v) for v in index_values]
+            path = self.artifact_dir / f"{node_id}.filter.json"
+            payload: dict = {"parent_state_id": parent_state_id, "index": safe}
+            if parent_artifact_state_id:
+                payload["parent_artifact_state_id"] = parent_artifact_state_id
+            with open(str(path), "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            return str(path)
+        except Exception as e:
+            log_storage_error(e, component="_save_filter_index", node_id=node_id)
             return None
 
     def load_artifact(self, artifact_state_id: str) -> Any:
@@ -218,12 +255,61 @@ class DuckDBSQLiteBackend:
                 log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
                 return None
 
+        if mime_type == "application/x-pmprov-filter-index+json":
+            try:
+                with open(content_ref, "r", encoding="utf-8") as f:
+                    filter_data = json.load(f)
+                index_values = filter_data["index"]
+                # Prefer the direct artifact_state_id stored at write time (no join needed).
+                parent_artifact_state_id = filter_data.get("parent_artifact_state_id")
+                if parent_artifact_state_id is None:
+                    # Fallback for filter.json files written without the direct reference.
+                    parent_state_id = filter_data["parent_state_id"]
+                    parent_artifact_state_id = self.load_output_artifact_state_id(parent_state_id)
+                if parent_artifact_state_id is None:
+                    return None
+                parent_df = self.load_artifact(parent_artifact_state_id)
+                if parent_df is None:
+                    return None
+                return parent_df.loc[index_values]
+            except Exception as e:
+                log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
+                return None
+
         # Future artifact types (process models, rulesets, etc.) would be handled here.
         raise NotImplementedError(
             f"load_artifact: no deserialiser implemented for mime_type='{mime_type}' "
             f"(artifact_state_id={artifact_state_id}). "
             "Add a handler here when support for this type is introduced."
         )
+
+    def load_artifact_by_path(self, path: str) -> Any:
+        """Load an artifact directly from its file path (Parquet, Plotly JSON, or filter JSON)."""
+        try:
+            if path.endswith(".plotly.json"):
+                import plotly.io as pio
+                with open(path, "r", encoding="utf-8") as f:
+                    return pio.from_json(f.read())
+            if path.endswith(".filter.json"):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            import pandas as pd
+            return pd.read_parquet(path)
+        except Exception as e:
+            log_storage_error(e, method="load_artifact_by_path", path=path)
+            return None
+
+    def load_artifact_index(self, state_id: str) -> Optional[list]:
+        """Return the stored row-index values for a filter-index artifact, or None if absent."""
+        path = self.artifact_dir / f"{state_id}.filter.json"
+        if not path.is_file():
+            return None
+        try:
+            with open(str(path), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("index")
+        except Exception:
+            return None
 
     def load_output_artifact_state_id(self, output_state_id: str) -> Optional[str]:
         """Return the artifact_state_id produced by the given output_state_id, or None."""

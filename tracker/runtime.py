@@ -126,6 +126,17 @@ def _infer_artifact_type(obj: Any) -> ArtifactType:
     return ArtifactType.OTHER
 
 
+def _is_row_filter(pre_snap: dict, post_snap: dict) -> bool:
+    """True when a DataFrame step looks like a pure row filter: same columns+dtypes, fewer rows."""
+    return (
+        pre_snap.get("kind") == "dataframe"
+        and post_snap.get("kind") == "dataframe"
+        and pre_snap.get("columns") == post_snap.get("columns")
+        and pre_snap.get("dtypes") == post_snap.get("dtypes")
+        and post_snap.get("shape", [0])[0] < pre_snap.get("shape", [0])[0]
+    )
+
+
 class RuntimeTracker:
     """
     Stateful provenance tracker for one notebook session.
@@ -375,16 +386,35 @@ class RuntimeTracker:
         # ---- 7. Artifact persistence -----------------------------------------
         artifact_records: dict = {}
         artifact_path: Optional[str] = None
-        if post_snap.get("kind") == "dataframe" and output is not None:
-            artifact_path = self.storage.save_artifact(output_state_id, output)
-            if artifact_path:
-                try:
+        _artifact_kind = post_snap.get("kind")
+        if _artifact_kind in {"dataframe", "figure"} and output is not None:
+            try:
+                if _artifact_kind == "dataframe":
+                    _pre = pre_snaps.get("arg_0", {})
+                    if _is_row_filter(_pre, post_snap):
+                        _artifact_kind = "filter_index"
+                # For filter_index: pass the parent's artifact_state_id directly so
+                # load_artifact can reconstruct the filtered DataFrame without a join.
+                _parent_ast_id = ""
+                if _artifact_kind == "filter_index":
+                    _first_df_arg = next(
+                        (a for a in args if type(a).__name__ == "DataFrame"), None
+                    )
+                    if _first_df_arg is not None:
+                        _parent_ast_id = self._artifact_state_registry.get(id(_first_df_arg), "")
+                artifact_path = self.storage.save_artifact(
+                    output_state_id, output, kind=_artifact_kind,
+                    parent_state_id=input_state_id,
+                    parent_artifact_state_id=_parent_ast_id,
+                )
+                if artifact_path:
                     artifact_records = self._build_artifact_records(
                         output, output_state_id, artifact_path
                     )
-                except Exception as e:
-                    log_trace_warning("output artifact record build failed",
-                                      step="output_artifact", func_name=func_name, error=e)
+            except Exception as e:
+                log_trace_warning("output artifact persistence failed",
+                                  step="output_artifact", func_name=func_name, error=e)
+                artifact_path = None
 
         # ---- 8. Persist all entities ------------------------------------------------
         output_state = AnalysisState(
@@ -568,7 +598,7 @@ class RuntimeTracker:
         artifact_path: str,
     ) -> dict:
         """
-        Build Artifact + ArtifactState Pydantic models for a DataFrame output.
+        Build Artifact + ArtifactState Pydantic models for a DataFrame or Figure output.
 
         Returns a dict with keys ``artifact_obj`` (None if already seen) and
         ``artifact_state_obj``.
@@ -588,11 +618,18 @@ class RuntimeTracker:
             )
             self._artifact_registry[obj_python_id] = artifact_id
 
+        if artifact_path.endswith(".plotly.json"):
+            mime_type = "application/vnd.plotly.v1+json"
+        elif artifact_path.endswith(".filter.json"):
+            mime_type = "application/x-pmprov-filter-index+json"
+        else:
+            mime_type = "application/vnd.apache.parquet"
+
         artifact_state = ArtifactState(
             artifact_state_id=_uid(),
             artifact_id=artifact_id,
             analysis_state_id=output_state_id,
-            mime_type="application/vnd.apache.parquet",
+            mime_type=mime_type,
             checksum=f"sha256:{checksum_hex}",
             content_ref=artifact_path,
             size_bytes=size_bytes,

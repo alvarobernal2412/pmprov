@@ -9,7 +9,7 @@ dependencies = [
     "marimo==0.23.9",
     "matplotlib==3.10.9",
     "pandas==3.0.3",
-    "plotly>=6.8.0",
+    "plotly==6.8.0",
     "pyarrow==24.0.0",
     "pydantic==2.13.4",
 ]
@@ -34,7 +34,7 @@ full = ["duckdb==1.5.3", "pyarrow==24.0.0", "networkx==3.6.1", "matplotlib==3.10
 [dependency-groups]
 dev = [
     "pytest==9.0.3",
-    "pre-commit>=4.0",
+    "pre-commit==4.6.0",
     "networkx==3.6.1",
 ]
 

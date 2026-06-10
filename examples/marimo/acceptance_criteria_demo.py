@@ -12,36 +12,30 @@ def _():
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        # pmprov — Acceptance Criteria Demo (Marimo)
+    mo.md(r"""
+    # pmprov — Acceptance Criteria Demo (Marimo)
 
-        Validates R1–R7 against the Marimo code path.
-        Each section asserts the same criteria as `acceptance_criteria_demo.ipynb`.
+    Validates R1–R7 against the Marimo code path.
+    Each section asserts the same criteria as `acceptance_criteria_demo.ipynb`.
 
-        | Requirement | ACs |
-        |---|---|
-        | R1 Traceability | 1.1 full lineage · 1.2 step detail · 1.3 execution context |
-        | R2 Reproducibility | 2.1 artifact refs · 2.2 scalar params · 2.3 runtime env · 2.4 replay |
-        | R3 Branching | 3.1 divergence point · 3.2 independent branches |
-        | R4 Reusability | 4.1 pipeline creation · 4.2 param overrides · 4.3 distinct steps |
-        | R5 State Comparison | 5.1 granular diff · 5.2 abstracted diff |
-        | R6 History Comparison | 6.1 operation diff · 6.2–6.3 category diff |
-        | R7 Data Evolution | 7.1 delta per step · 7.2 lifecycle · 7.3 linked states |
-        """
-    )
-    return ()
+    | Requirement | ACs |
+    |---|---|
+    | R1 Traceability | 1.1 full lineage · 1.2 step detail · 1.3 execution context |
+    | R2 Reproducibility | 2.1 artifact refs · 2.2 scalar params · 2.3 runtime env · 2.4 replay |
+    | R3 Branching | 3.1 divergence point · 3.2 independent branches |
+    | R4 Reusability | 4.1 pipeline creation · 4.2 param overrides · 4.3 distinct steps |
+    | R5 State Comparison | 5.1 granular diff · 5.2 abstracted diff |
+    | R6 History Comparison | 6.1 operation diff · 6.2–6.3 category diff |
+    | R7 Data Evolution | 7.1 delta per step · 7.2 lifecycle · 7.3 linked states |
+    """)
+    return
 
-
-# ── 0  Path setup ─────────────────────────────────────────────────────────────
 
 @app.cell
 def _():
     import sys
-    import os
     from pathlib import Path
 
-    # Locate repo root by walking up until pyproject.toml is found
     _here = Path.cwd()
     _repo_root = _here
     for _candidate in [_here, *_here.parents]:
@@ -55,22 +49,7 @@ def _():
     if str(_examples) not in sys.path:
         sys.path.insert(0, str(_examples))
 
-    CASE_ID_COL = "case:concept:name"
-    TIMESTAMP_COL = "time:timestamp"
-    ACTIVITY_COL = "concept:name"
-    DATA_FILE = str(_repo_root / "examples" / "data" / "rtfm_full.csv")
-    ARTIFACT_DIR = str(_repo_root / "examples" / "marimo" / "artifacts_ac_demo")
-    DB_PATH = str(_repo_root / "examples" / "marimo" / "provenance_ac_demo.db")
-
     import pandas as pd
-    return (ACTIVITY_COL, ARTIFACT_DIR, CASE_ID_COL, DATA_FILE, DB_PATH,
-            TIMESTAMP_COL, Path, os, pd, sys)
-
-
-# ── 1  Tracker init ───────────────────────────────────────────────────────────
-
-@app.cell
-def _(ARTIFACT_DIR, DB_PATH, Path, pd):
     from tracker import init_marimo, omit_functions, operation_type, step_category
     from utils.event_enricher import (
         create_case_log,
@@ -78,22 +57,29 @@ def _(ARTIFACT_DIR, DB_PATH, Path, pd):
         case_add_activity_start_times,
     )
 
-    Path(ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
+    CASE_ID_COL = "case:concept:name"
+    TIMESTAMP_COL = "time:timestamp"
+    ACTIVITY_COL = "concept:name"
+    DATA_FILE = str(_repo_root / "examples" / "data" / "rtfm_full.csv")
+
+    _artifact_dir = str(_repo_root / "examples" / "marimo" / "artifacts_ac_demo")
+    _db_path = str(_repo_root / "examples" / "marimo" / "provenance_ac_demo.db")
+    Path(_artifact_dir).mkdir(parents=True, exist_ok=True)
 
     rt = init_marimo(
         history_name="AC demo (Marimo)",
         branch_name="main",
-        artifact_dir=ARTIFACT_DIR,
-        db_path=DB_PATH,
+        artifact_dir=_artifact_dir,
+        db_path=_db_path,
     )
 
-    operation_type("data_loading",        pd.read_csv)
-    operation_type("case_aggregation",    create_case_log)
+    operation_type("data_loading",         pd.read_csv)
+    operation_type("case_aggregation",     create_case_log)
     operation_type("attribute_derivation", event_add_relative_case_time)
     operation_type("attribute_derivation", case_add_activity_start_times)
-    step_category("data_loading_phase",       "data_loading")
-    step_category("case_aggregation_phase",   "case_aggregation")
-    step_category("log_enrichment_phase",     "attribute_derivation")
+    step_category("data_loading_phase",    "data_loading")
+    step_category("case_aggregation_phase","case_aggregation")
+    step_category("log_enrichment_phase",  "attribute_derivation")
     omit_functions("reset_index", "sort_values", "read_parquet", "dropna", "tolist")
 
     def settle():
@@ -101,15 +87,18 @@ def _(ARTIFACT_DIR, DB_PATH, Path, pd):
 
     print(f"History ID: {rt._history.history_id}")
     return (
+        ACTIVITY_COL,
+        CASE_ID_COL,
+        DATA_FILE,
+        TIMESTAMP_COL,
         case_add_activity_start_times,
         create_case_log,
         event_add_relative_case_time,
+        pd,
         rt,
         settle,
     )
 
-
-# ── 2  Analysis pipeline ──────────────────────────────────────────────────────
 
 @app.cell
 def _(DATA_FILE, TIMESTAMP_COL, pd):
@@ -140,7 +129,13 @@ def _(CASE_ID_COL, TIMESTAMP_COL, event_add_relative_case_time, event_log):
 
 
 @app.cell
-def _(ACTIVITY_COL, CASE_ID_COL, case_add_activity_start_times, case_log, event_log_enriched):
+def _(
+    ACTIVITY_COL,
+    CASE_ID_COL,
+    case_add_activity_start_times,
+    case_log,
+    event_log_enriched,
+):
     # Step 4 – pivot activity start times  [tracked]
     case_log_pivoted = case_add_activity_start_times(
         case_log, event_log_enriched, CASE_ID_COL, ACTIVITY_COL, "rel_time"
@@ -174,8 +169,6 @@ def _(case_log_with_delay):
     return (is_illegal_delay,)
 
 
-# ── State cache (all AC sections depend on this) ──────────────────────────────
-
 @app.cell
 def _(is_illegal_delay, rt, settle):
     # Explicit dep on is_illegal_delay ensures pipeline is fully run before querying
@@ -192,15 +185,15 @@ def _(is_illegal_delay, rt, settle):
                 "detail": _d,
             }
     states_df
-    return (step_details, states_df)
+    return states_df, step_details
 
-
-# ── R1  Traceability ──────────────────────────────────────────────────────────
 
 @app.cell
 def _(mo):
-    mo.md("## R1 – Traceability")
-    return ()
+    mo.md("""
+    ## R1 – Traceability
+    """)
+    return
 
 
 @app.cell
@@ -216,7 +209,7 @@ def _(mo, rt, settle):
         f"**AC 1.1 ✓** — {len(_graph['states'])} states, {len(_graph['steps'])} steps, "
         f"acyclic: {nx.is_directed_acyclic_graph(G)}"
     )
-    return (G, nx)
+    return
 
 
 @app.cell
@@ -231,7 +224,7 @@ def _(mo, step_details):
         f"raw_line=`{_d['raw_line'][:60]}…`, "
         f"{len(_d['params'])} params captured"
     )
-    return ()
+    return
 
 
 @app.cell
@@ -244,22 +237,22 @@ def _(mo, step_details):
         f"**AC 1.3 ✓** — agent_type=`{_d['agent']['agent_type']}`, "
         f"tool_version=`{_d['environment']['tool_version']}`"
     )
-    return ()
+    return
 
 
 @app.cell
 def _(mo, rt):
     _fig = rt.show_graph()
     mo.as_html(_fig) if _fig is not None else mo.md("*(graph unavailable)*")
-    return ()
+    return
 
-
-# ── R2  Reproducibility ───────────────────────────────────────────────────────
 
 @app.cell
 def _(mo):
-    mo.md("## R2 – Reproducibility")
-    return ()
+    mo.md("""
+    ## R2 – Reproducibility
+    """)
+    return
 
 
 @app.cell
@@ -272,7 +265,7 @@ def _(mo, step_details):
         f"**AC 2.1 ✓** — create_case_log has {len(_artifact_params)} artifact_state_ref param(s); "
         f"artifact_state_id=`{str(_artifact_params[0]['value'])[:8]}…`"
     )
-    return ()
+    return
 
 
 @app.cell
@@ -283,7 +276,7 @@ def _(mo, step_details):
     _path_param = next((p for p in _scalars if "rtfm" in str(p.get("value", ""))), None)
     assert _path_param, "File path param not captured as scalar"
     mo.md(f"**AC 2.2 ✓** — scalar param value=`{str(_path_param['value'])[:60]}`")
-    return ()
+    return
 
 
 @app.cell
@@ -302,7 +295,7 @@ def _(mo, step_details):
         f"**AC 2.3 ✓** — runtime=`{_env['runtime']}`, "
         f"{len(_libs)} library versions captured"
     )
-    return ()
+    return
 
 
 @app.cell
@@ -326,15 +319,15 @@ def _(mo, rt, settle, step_details):
         f"**AC 2.4 ✓** — replay produced new state `{_state_after[:8]}…`; "
         f"shape matches: {_replayed_artifact.shape}"
     )
-    return ()
+    return
 
-
-# ── R3  Branching ─────────────────────────────────────────────────────────────
 
 @app.cell
 def _(mo):
-    mo.md("## R3 – Branching")
-    return ()
+    mo.md("""
+    ## R3 – Branching
+    """)
+    return
 
 
 @app.cell
@@ -359,7 +352,7 @@ def _(fork_state_id, mo, rt):
         f"**AC 3.1 ✓** — divergence_point_id=`{fork_state_id[:8]}…`  \n"
         f"**AC 3.2 ✓** — branches: {_names}"
     )
-    return ()
+    return
 
 
 @app.cell
@@ -367,15 +360,15 @@ def _(fork_state_id, mo, rt):
     _ = fork_state_id  # ensure checkout has run
     _fig = rt.show_graph()
     mo.as_html(_fig) if _fig is not None else mo.md("*(graph unavailable)*")
-    return ()
+    return
 
-
-# ── R4  Reusability ───────────────────────────────────────────────────────────
 
 @app.cell
 def _(mo):
-    mo.md("## R4 – Reusability")
-    return ()
+    mo.md("""
+    ## R4 – Reusability
+    """)
+    return
 
 
 @app.cell
@@ -396,7 +389,7 @@ def _(mo, rt, settle, step_details):
         f"**AC 4.1 ✓** — pipeline `{PIPELINE_NAME}` created with id=`{pipeline_id[:8]}…`, "
         f"{len(step_ids)} steps"
     )
-    return (PIPELINE_NAME, pipeline_id, step_ids)
+    return pipeline_id, step_ids
 
 
 @app.cell
@@ -428,7 +421,7 @@ def _(
         f"**AC 4.2 ✓** — replay_pipeline succeeded, "
         f"output shape: {result_pipeline['output'].shape}"
     )
-    return (result_pipeline,)
+    return
 
 
 @app.cell
@@ -439,15 +432,15 @@ def _(mo, rt, settle, step_ids):
     _missing = [sid for sid in step_ids if sid not in _recorded_step_ids]
     assert not _missing, f"Pipeline step IDs not in graph: {_missing}"
     mo.md(f"**AC 4.3 ✓** — all {len(step_ids)} pipeline step IDs present in provenance graph")
-    return ()
+    return
 
-
-# ── R5  State Comparison ──────────────────────────────────────────────────────
 
 @app.cell
 def _(mo):
-    mo.md("## R5 – State Comparison")
-    return ()
+    mo.md("""
+    ## R5 – State Comparison
+    """)
+    return
 
 
 @app.cell
@@ -467,7 +460,7 @@ def _(mo, rt, step_details):
         f"unique_to_case_log: {len(_cmp['unique_to_b'])}, "
         f"shapes: {_cmp['shape_a']} vs {_cmp['shape_b']}"
     )
-    return (cl_state, el_state)
+    return cl_state, el_state
 
 
 @app.cell
@@ -485,15 +478,15 @@ def _(cl_state, el_state, mo, rt):
         f"**AC 5.2 ✓** — row_count: event_log={_abstracted['row_count']['a']}, "
         f"case_log={_abstracted['row_count']['b']}"
     )
-    return ()
+    return
 
-
-# ── R6  History Comparison ────────────────────────────────────────────────────
 
 @app.cell
 def _(mo):
-    mo.md("## R6 – History Comparison")
-    return ()
+    mo.md("""
+    ## R6 – History Comparison
+    """)
+    return
 
 
 @app.cell
@@ -541,7 +534,7 @@ def _(mo, rt, rt2):
         f"unique_to_A: {len(_hist_cmp['unique_to_a'])}, "
         f"unique_to_B: {len(_hist_cmp['unique_to_b'])}"
     )
-    return ()
+    return
 
 
 @app.cell
@@ -553,15 +546,15 @@ def _(mo, rt, rt2):
         f"**AC 6.2 ✓** category_summary_a: {dict(list(_cat_cmp['category_summary_a'].items())[:3])}  \n"
         f"**AC 6.3 ✓** category_summary_b: {dict(list(_cat_cmp['category_summary_b'].items())[:3])}"
     )
-    return ()
+    return
 
-
-# ── R7  Data Evolution ────────────────────────────────────────────────────────
 
 @app.cell
 def _(mo):
-    mo.md("## R7 – Data Evolution Transparency")
-    return ()
+    mo.md("""
+    ## R7 – Data Evolution Transparency
+    """)
+    return
 
 
 @app.cell
@@ -574,7 +567,7 @@ def _(mo, step_details):
         f"**AC 7.1 ✓** — delta keys: {list(_delta.keys())}, "
         f"columns_added: {_delta.get('columns_added', [])}"
     )
-    return ()
+    return
 
 
 @app.cell
@@ -606,49 +599,45 @@ def _(mo, rt, settle):
         f"**AC 7.3 ✓** — {len(_rows)} states have derived_from_state_id set, "
         f"e.g. `{_sids[0][:8]}…` derived from `{_parents[0][:8]}…`"
     )
-    return ()
+    return
 
 
 @app.cell
 def _(final_state, mo, rt):
     _fig = rt.show_artifact_lifecycle(final_state)
     mo.as_html(_fig) if _fig is not None else mo.md("*(lifecycle graph unavailable)*")
-    return ()
+    return
 
-
-# ── Summary ───────────────────────────────────────────────────────────────────
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        ## Summary
+    mo.md(r"""
+    ## Summary
 
-        | AC | Feature | Status |
-        |---|---|---|
-        | 1.1 | Full lineage in provenance tree | ✓ |
-        | 1.2 | Step detail (func_name, raw_line, params) | ✓ |
-        | 1.3 | Execution context (agent, environment) | ✓ |
-        | 2.1 | Artifact state references in parameters | ✓ |
-        | 2.2 | Scalar parameter capture | ✓ |
-        | 2.3 | Runtime environment capture | ✓ |
-        | 2.4 | Replay state produces equivalent output | ✓ |
-        | 3.1 | Divergence point on manual checkout | ✓ |
-        | 3.2 | Independent branches | ✓ |
-        | 4.1 | Pipeline fragment creation | ✓ |
-        | 4.2 | Parameter overrides in replay | ✓ |
-        | 4.3 | Distinct steps per pipeline | ✓ |
-        | 5.1 | Granular state diff | ✓ |
-        | 5.2 | Abstracted state comparison | ✓ |
-        | 6.1 | Operation-level history diff | ✓ |
-        | 6.2 | Category-level history diff | ✓ |
-        | 6.3 | Category summary counts | ✓ |
-        | 7.1 | Delta captured per step | ✓ |
-        | 7.2 | Artifact lifecycle entries | ✓ |
-        | 7.3 | Intermediate states linked | ✓ |
-        """
-    )
-    return ()
+    | AC | Feature | Status |
+    |---|---|---|
+    | 1.1 | Full lineage in provenance tree | ✓ |
+    | 1.2 | Step detail (func_name, raw_line, params) | ✓ |
+    | 1.3 | Execution context (agent, environment) | ✓ |
+    | 2.1 | Artifact state references in parameters | ✓ |
+    | 2.2 | Scalar parameter capture | ✓ |
+    | 2.3 | Runtime environment capture | ✓ |
+    | 2.4 | Replay state produces equivalent output | ✓ |
+    | 3.1 | Divergence point on manual checkout | ✓ |
+    | 3.2 | Independent branches | ✓ |
+    | 4.1 | Pipeline fragment creation | ✓ |
+    | 4.2 | Parameter overrides in replay | ✓ |
+    | 4.3 | Distinct steps per pipeline | ✓ |
+    | 5.1 | Granular state diff | ✓ |
+    | 5.2 | Abstracted state comparison | ✓ |
+    | 6.1 | Operation-level history diff | ✓ |
+    | 6.2 | Category-level history diff | ✓ |
+    | 6.3 | Category summary counts | ✓ |
+    | 7.1 | Delta captured per step | ✓ |
+    | 7.2 | Artifact lifecycle entries | ✓ |
+    | 7.3 | Intermediate states linked | ✓ |
+    """)
+    return
 
 
 if __name__ == "__main__":

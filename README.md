@@ -48,25 +48,34 @@ net, im, fm = pm4py.discover_petri_net_inductive(event_log)
 
 **In a Marimo notebook:**
 
-Marimo support requires a one-time setup step. The middleware patches Marimo's AST compiler at Python startup via `sitecustomize.py`, which must be placed in your virtual environment:
+Marimo support requires a one-time setup step. The middleware patches Marimo's AST compiler at Python startup via `sitecustomize.py`, which must be placed in your virtual environment (already in place if installed via `uv`).
 
-```bash
-# Copy sitecustomize.py into the venv (run once after cloning)
-cp .venv/Lib/site-packages/sitecustomize.py .venv/Lib/site-packages/sitecustomize.py  # already in place if installed via uv
-```
-
-Then in your Marimo notebook:
+**Structural requirement:** Marimo's reactive DAG is built from the original cell code *before* the AST rewriter runs. This means the rewriter cannot inject dependency edges automatically. To guarantee that `init_marimo()` runs before any tracked cell, **combine your path setup and `init_marimo()` call in one cell** and export all imports (`pd`, constants, etc.) from it. Downstream cells then depend on those names naturally, which implicitly orders them after init — no need to add `rt` to every cell's parameters.
 
 ```python
-from tracker import init_marimo, operation_type
-import pandas as pd
+# ── Setup + init (one cell) ───────────────────────────────────────────────────
+@app.cell
+def _():
+    import sys, pandas as pd
+    from pathlib import Path
+    from tracker import init_marimo, operation_type
 
-operation_type("data_loading", pd.read_csv)
+    # ... path setup ...
 
-rt = init_marimo(history_name="My analysis")
+    rt = init_marimo(history_name="My analysis")
+    operation_type("data_loading", pd.read_csv)
 
-# Your normal analysis code — provenance is captured automatically
-event_log = pd.read_csv("data/log.csv", parse_dates=["time:timestamp"])
+    def settle():
+        rt.storage._executor.submit(lambda: None).result()
+
+    return pd, rt, settle, DATA_FILE  # export everything downstream cells need
+
+
+# ── Analysis cells — no `rt` needed in params ─────────────────────────────────
+@app.cell
+def _(DATA_FILE, pd):          # depends on pd + DATA_FILE → init already ran
+    event_log = pd.read_csv(DATA_FILE, parse_dates=["time:timestamp"])
+    return (event_log,)
 ```
 
 Run with:

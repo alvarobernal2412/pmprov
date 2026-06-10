@@ -216,8 +216,9 @@ def event_add_relative_case_time(
     adds the relative case time for each event in the log
     the earliest event of each case has relative time 0
     """
-    event_log["rel_time"] = event_log.groupby(case_id_col)[time_col].transform(
-        lambda x: x - x.min()
+    event_log["rel_time"] = (
+        event_log[time_col]
+        - event_log.groupby(case_id_col)[time_col].transform("min")
     )
     return event_log
 

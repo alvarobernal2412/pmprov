@@ -157,7 +157,7 @@ def _(mo):
 
 
 @app.cell
-def _(case_log_with_delay, rt, threshold):
+def _(case_log_with_delay, threshold):
     # Step 6 – classify cases with an illegal delay
     # ProvTrackTransformer rewrites this to:
     #   is_illegal_delay = __import__('tracker.kernel_hooks', fromlist=['_runtime'])
@@ -168,17 +168,16 @@ def _(case_log_with_delay, rt, threshold):
     )
     print(f"Threshold: {threshold.value} days")
     print(f"Cases flagged as illegal delay: {is_illegal_delay.sum():,}")
-    print(f"Current branch: '{rt._branch.name}'")
     is_illegal_delay.head()
     return (is_illegal_delay,)
 
 
 @app.cell
-def _(is_illegal_delay, mo, rt):
+def _(is_illegal_delay, rt):
     # Provenance graph — re-renders every time is_illegal_delay changes.
     _ = is_illegal_delay  # explicit dependency so Marimo re-runs this cell
-    _fig = rt.show_graph()
-    return (mo.as_html(_fig) if _fig is not None else mo.md("No provenance steps recorded yet."),)
+    rt.show_graph()
+    return
 
 
 if __name__ == "__main__":

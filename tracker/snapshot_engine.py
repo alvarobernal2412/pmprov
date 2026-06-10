@@ -11,14 +11,18 @@ def capture_snapshot(obj: Any) -> dict:
 
     Never performs deep copies. Detection priority:
       1. DataFrame  (Pandas / Polars)
-      2. Array / Tensor  (NumPy / PyTorch)
-      3. Collection  (list, dict, set – anything with __len__ except strings)
-      4. Fallback
+      2. Figure  (Plotly)
+      3. Array / Tensor  (NumPy / PyTorch)
+      4. Collection  (list, dict, set – anything with __len__ except strings)
+      5. Fallback
     """
     type_name = type(obj).__name__
 
     if type_name == "DataFrame":
         return _dataframe(obj)
+
+    if _is_plotly_figure(obj):
+        return _figure(obj)
 
     if hasattr(obj, "shape") and hasattr(obj, "dtype"):
         return _array(obj)
@@ -75,6 +79,25 @@ def _collection(obj) -> dict:
         }
     except Exception:
         return _fallback(obj)
+
+
+def _is_plotly_figure(obj) -> bool:
+    t = type(obj)
+    return t.__name__ == "Figure" and getattr(t, "__module__", "").startswith("plotly")
+
+
+def _figure(fig) -> dict:
+    try:
+        layout_keys = list(fig.layout.to_plotly_json().keys())
+        return {
+            "kind": "figure",
+            "figure_type": "plotly",
+            "object_id": id(fig),
+            "trace_count": len(fig.data),
+            "layout_keys": layout_keys,
+        }
+    except Exception:
+        return _fallback(fig)
 
 
 def _fallback(obj) -> dict:

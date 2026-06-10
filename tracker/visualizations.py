@@ -54,10 +54,12 @@ def _build_display_graph(graph_data: dict):
     """Build a networkx DiGraph from step-produced states only."""
     import networkx as nx
 
+    ROOT = "__ROOT__"
     step_output_ids = {st["output_state_id"] for st in graph_data["steps"]}
     state_map = {s["state_id"]: s for s in graph_data["states"]}
 
     G = nx.DiGraph()
+    G.add_node(ROOT)
     for sid in step_output_ids:
         if sid in state_map:
             G.add_node(sid, **state_map[sid])
@@ -65,46 +67,53 @@ def _build_display_graph(graph_data: dict):
     for st in graph_data["steps"]:
         src = st["input_state_id"]
         dst = st["output_state_id"]
-        if dst in step_output_ids:
-            if src in step_output_ids:
-                G.add_edge(src, dst, func_name=st["func_name"])
-            else:
-                # edge from root/non-step state -> first step output
-                G.add_edge("__ROOT__", dst, func_name=st["func_name"])
-
-    ROOT = "__ROOT__"
-    root_children = [n for n in G.nodes() if n != ROOT and G.in_degree(n) == 0]
-    if root_children:
-        G.add_node(ROOT)
-        for child in root_children:
-            G.add_edge(ROOT, child, func_name="")
+        if dst not in step_output_ids:
+            continue
+        parent = src if src in step_output_ids else ROOT
+        if not G.has_edge(parent, dst):
+            G.add_edge(parent, dst, func_name=st["func_name"])
 
     return G, state_map
 
 
-def _compute_layout(G) -> dict:
-    import networkx as nx
+def _tree_layout(G, root: str) -> dict:
+    """Recursive subtree-width layout — centres each node over its subtree."""
+    subtree_size: dict = {}
 
+    def _size(node: str) -> int:
+        children = list(G.successors(node))
+        s = max(1, sum(_size(c) for c in children))
+        subtree_size[node] = s
+        return s
+
+    _size(root)
+
+    pos: dict = {}
+
+    def _assign(node: str, x_left: float, x_right: float, depth: int) -> None:
+        pos[node] = ((x_left + x_right) / 2, -float(depth))
+        children = list(G.successors(node))
+        if not children:
+            return
+        total = subtree_size[node]
+        cursor = x_left
+        for child in children:
+            width = (x_right - x_left) * subtree_size[child] / total
+            _assign(child, cursor, cursor + width, depth + 1)
+            cursor += width
+
+    _assign(root, 0.0, float(max(subtree_size[root], 1)), 0)
+    return pos
+
+
+def _compute_layout(G) -> dict:
     try:
         from networkx.drawing.nx_pydot import graphviz_layout
-        pos = graphviz_layout(G, prog="dot")
-        return pos
+        return graphviz_layout(G, prog="dot")
     except Exception:
         pass
 
-    if nx.is_directed_acyclic_graph(G) and G.number_of_nodes() > 0:
-        layers = list(nx.topological_generations(G))
-        pos: dict = {}
-        for layer_idx, layer in enumerate(layers):
-            nodes = sorted(layer)
-            count = max(len(nodes), 1)
-            for offset, node_id in enumerate(nodes):
-                x = (offset + 1) / (count + 1)
-                y = -float(layer_idx) * 2.5
-                pos[node_id] = (x, y)
-        return pos
-
-    return nx.spring_layout(G, seed=1)
+    return _tree_layout(G, "__ROOT__")
 
 
 def _text_fallback(graph_data: dict) -> None:
@@ -133,7 +142,8 @@ def _show_graph(
         print("show_graph() requires networkx. Install with: uv pip install -e '.[graph]'")
         return None
 
-    graph_data = self.storage.load_graph()
+    self.storage._executor.submit(lambda: None).result()
+    graph_data = self.storage.load_graph(self._history.history_id)
     step_outputs = _step_nodes(graph_data)
 
     if not step_outputs:
@@ -149,7 +159,6 @@ def _show_graph(
     try:
         G, state_map = _build_display_graph(graph_data)
         pos = _compute_layout(G)
-        pos = {n: (x, y * 1.5) for n, (x, y) in pos.items()}
 
         node_labels = {}
         for node_id in G.nodes():
@@ -165,12 +174,8 @@ def _show_graph(
             for u, v, d in G.edges(data=True)
         }
 
-        import networkx as nx
-        layer_count = 1
-        if nx.is_directed_acyclic_graph(G) and G.number_of_nodes() > 0:
-            layer_count = len(list(nx.topological_generations(G)))
-
-        fig, ax = plt.subplots(figsize=(10, max(5, 1.4 * layer_count)))
+        depth = int(max((abs(y) for _, y in pos.values()), default=0)) + 1
+        fig, ax = plt.subplots(figsize=(10, max(5, 1.4 * depth)))
 
         nx.draw_networkx_edges(G, pos, ax=ax, edge_color="#5f6368", arrows=True)
         nx.draw_networkx_nodes(
@@ -220,7 +225,6 @@ def _render_graph_image(self: "RuntimeTracker") -> Any:
     try:
         G, state_map = _build_display_graph(graph_data)
         pos = _compute_layout(G)
-        pos = {n: (x, y * 1.5) for n, (x, y) in pos.items()}
 
         node_labels = {
             node_id: ("ROOT" if node_id == "__ROOT__" else _state_label(state_map[node_id]))
@@ -232,10 +236,8 @@ def _render_graph_image(self: "RuntimeTracker") -> Any:
             for u, v, d in G.edges(data=True)
         }
 
-        import networkx as nx
-        layer_count = max(1, len(list(nx.topological_generations(G))) if nx.is_directed_acyclic_graph(G) else 1)
-
-        fig, ax = plt.subplots(figsize=(6, max(4, 1.2 * layer_count)))
+        depth = int(max((abs(y) for _, y in pos.values()), default=0)) + 1
+        fig, ax = plt.subplots(figsize=(6, max(4, 1.2 * depth)))
         nx.draw_networkx_edges(G, pos, ax=ax, edge_color="#5f6368", arrows=True)
         nx.draw_networkx_nodes(G, pos, ax=ax, node_color="#e8f0fe", node_size=700, edgecolors="#5f6368")
         nx.draw_networkx_labels(G, pos, node_labels, ax=ax, font_size=7)

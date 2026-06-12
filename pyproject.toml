@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "ipywidgets==8.1.8",
     "marimo==0.23.9",
-    "matplotlib==3.10.9",
+    "matplotlib==3.11.0",
     "pandas==3.0.3",
     "plotly>=6.8.0",
     "pyarrow==24.0.0",
@@ -22,14 +22,14 @@ parquet = ["pyarrow==24.0.0"]
 # In-memory graph support for load_graph() → networkx; matplotlib for show_graph()
 graph = [
     "networkx==3.6.1",
-    "matplotlib==3.10.9",
+    "matplotlib==3.11.0",
 ]
 # Interactive provenance widget for show_graph_widget() in Jupyter
 widgets = [
     "ipywidgets==8.1.8",
 ]
 # Install everything at once: uv pip install -e ".[full]"
-full = ["duckdb==1.5.3", "pyarrow==24.0.0", "networkx==3.6.1", "matplotlib==3.10.9", "ipywidgets==8.1.8"]
+full = ["duckdb==1.5.3", "pyarrow==24.0.0", "networkx==3.6.1", "matplotlib==3.11.0", "ipywidgets==8.1.8"]
 
 [dependency-groups]
 dev = [

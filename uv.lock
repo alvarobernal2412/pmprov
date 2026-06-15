@@ -950,7 +950,7 @@ requires-dist = [
     { name = "networkx", marker = "extra == 'full'", specifier = "==3.6.1" },
     { name = "networkx", marker = "extra == 'graph'", specifier = "==3.6.1" },
     { name = "pandas", specifier = "==3.0.3" },
-    { name = "plotly", specifier = ">=6.8.0" },
+    { name = "plotly", specifier = "==6.8.0" },
     { name = "pyarrow", specifier = "==24.0.0" },
     { name = "pyarrow", marker = "extra == 'full'", specifier = "==24.0.0" },
     { name = "pyarrow", marker = "extra == 'parquet'", specifier = "==24.0.0" },
@@ -961,7 +961,7 @@ provides-extras = ["duckdb", "parquet", "graph", "widgets", "full"]
 [package.metadata.requires-dev]
 dev = [
     { name = "networkx", specifier = "==3.6.1" },
-    { name = "pre-commit", specifier = ">=4.0" },
+    { name = "pre-commit", specifier = "==4.6.0" },
     { name = "pytest", specifier = "==9.0.3" },
 ]
 

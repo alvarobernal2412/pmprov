@@ -1,5 +1,7 @@
 # pmprov
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alvarobernal2412/pmprov)
+
 **Analytic provenance tracking middleware for exploratory process mining notebooks.**
 
 `pmprov` automatically records every meaningful decision an analyst makes during a Jupyter or Marimo session — which functions were called, with what arguments, on which data, and how the data changed — without requiring any modification to analyst code.

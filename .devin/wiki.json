@@ -1,0 +1,61 @@
+{
+  "repo_notes": [
+    {
+      "content": "pmprov is a PhD research prototype implementing statement-level analytic provenance tracking middleware for Jupyter and Marimo notebooks. It works by intercepting top-level function calls via AST rewriting at Python compile time, recording before/after data snapshots, and persisting a provenance tree (states + steps) to DuckDB/SQLite with Parquet artifacts — all without modifying analyst code.\n\nThe codebase has two main packages:\n- models/: Pure Pydantic v2 domain models (no runtime logic). Key entities: AnalysisHistory > AnalysisBranch > AnalysisState <-> AnalysisStep, with Artifact/ArtifactState for data snapshots.\n- tracker/: Runtime middleware. Key files: ast_rewriter.py (AST transformer), runtime.py (trace_step interceptor), storage.py (async DuckDB/SQLite backend), kernel_hooks.py (Jupyter + Marimo integration entry points), visualizations.py and introspection.py (patched onto RuntimeTracker at import time).\n\nexamples/ contains demo notebooks (Jupyter + Marimo) using the RTFM process mining dataset and a standalone event_enricher.py helper.",
+      "author": "Alvaro Bernal Caunedo"
+    }
+  ],
+  "pages": [
+    {
+      "title": "Architecture Overview",
+      "purpose": "High-level description of how pmprov works end-to-end: AST rewriting at compile time, trace_step interception at runtime, async storage, and the provenance tree data model. Include a flow diagram: cell code → ProvTrackTransformer → RuntimeTracker.trace_step → StorageBackend."
+    },
+    {
+      "title": "Domain Model",
+      "purpose": "Document all Pydantic v2 models in models/: AnalysisHistory, AnalysisBranch, AnalysisState, AnalysisStep, Artifact, ArtifactState, Delta/DataFrameDelta, Operation/OperationType/StepCategory, Agent, RuntimeEnvironment, Parameter/ParameterValue (discriminated union), Pipeline/PipelineFragment. Show entity relationships and FK-style ID conventions.",
+      "parent": "Architecture Overview"
+    },
+    {
+      "title": "Tracker Middleware",
+      "purpose": "Document the tracker/ package modules: ast_rewriter.py (NodeTransformer, OMIT_FUNCTIONS, two-gate defence), snapshot_engine.py (metadata-only capture), delta_calculator.py (pre/post diff), operation_registry.py (func→OperationType mapping), runtime.py (trace_step flow, ParameterValue dispatch, artifact registry, branching detection), storage.py and storage_protocol.py (async DuckDB/SQLite backend, schema, read/write API).",
+      "parent": "Architecture Overview"
+    },
+    {
+      "title": "Jupyter Integration",
+      "purpose": "Document init_jupyter() in tracker/kernel_hooks.py: how it injects _provtrack_runtime into IPython user namespace, registers ProvTrackTransformer in ast_transformers, and initialises the RuntimeTracker session. Include the full init call signature and options."
+    },
+    {
+      "title": "Marimo Integration",
+      "purpose": "Document the Marimo integration: sitecustomize.py in .venv/Lib/site-packages/, patch_marimo_ast_compile(), _NoOpRuntime placeholder, init_marimo(), and the structural cell-ordering requirement (init + imports in one cell). Explain why Marimo's reactive DAG requires this pattern and show the correct vs anti-pattern.",
+      "parent": "Jupyter Integration"
+    },
+    {
+      "title": "Branching and Checkout",
+      "purpose": "Document the two branching mechanisms: (1) auto-branching via param_fingerprint MD5 comparison in _cell_executions, and (2) manual checkout via rt.checkout(state_id). Explain the fork-point logic and how branch lineage is stored via derived_from_state_id. Note that merge is not implemented."
+    },
+    {
+      "title": "Visualization and Introspection API",
+      "purpose": "Document all methods patched onto RuntimeTracker by visualizations.py and introspection.py: show_graph(), show_graph_widget(), list_states(), show_artifact_lifecycle(), describe_state(), describe_step(), list_branches(), replay_state() (including bound-method receiver reconstruction), replay_pipeline(), create_pipeline(), compare_states(), compare_histories(). Include typical usage workflow."
+    },
+    {
+      "title": "Storage Backend",
+      "purpose": "Document the StorageBackend Protocol (storage_protocol.py) and DuckDBSQLiteBackend (storage.py): full SQL schema (all tables), write path (ThreadPoolExecutor, fire-and-forget futures), read path (load_graph, load_states_rich, load_state_detail, load_artifact_lifecycle, etc.), DuckDB vs SQLite auto-detection, INSERT OR REPLACE constraints, and the _init_schema() migration."
+    },
+    {
+      "title": "Operation Registry",
+      "purpose": "Document tracker/operation_registry.py: how to register OperationType and StepCategory labels for third-party and user-defined functions using the decorator form and direct form. Explain lookup order (exact → trailing segment → 'unknown') and how StepCategory is written atomically with its Operation."
+    },
+    {
+      "title": "Getting Started",
+      "purpose": "Quickstart guide: installation with uv, init_jupyter() usage, init_marimo() usage with the correct cell pattern, operation_type() and step_category() registration, omit_functions(), enable_logging(). Point to example notebooks."
+    },
+    {
+      "title": "Examples and Demos",
+      "purpose": "Document examples/jupyter/provenance_demo.ipynb and examples/marimo/provenance_demo.py: the six-step RTFM pipeline (load, aggregate, enrich, pivot, derive, classify), auto-branching demo, manual checkout, and the acceptance_criteria_demo.ipynb (R1–R7). Document examples/utils/event_enricher.py helper functions and the named-index requirement."
+    },
+    {
+      "title": "Research Requirements",
+      "purpose": "Map the implemented research requirements R2–R7 (reproducibility, branching, reusability, state comparison, history comparison, data evolution) to the model elements and tracker methods that satisfy them. Reference the corresponding test files."
+    }
+  ]
+}

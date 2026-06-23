@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "ipywidgets==8.1.8",
-    "marimo==0.23.9",
+    "marimo==0.23.10",
     "matplotlib==3.11.0",
     "pandas==3.0.3",
     "plotly==6.8.0",

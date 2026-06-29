@@ -38,5 +38,9 @@ dev = [
     "networkx==3.6.1",
 ]
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [tool.setuptools.packages.find]
 include = ["models*", "tracker*"]

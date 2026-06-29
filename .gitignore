@@ -82,4 +82,6 @@ artifacts*/
 # AI agent configurations and data
 .claude/
 CLAUDE.md
+**/CLAUDE.md
+docs/claude/
 *superpowers

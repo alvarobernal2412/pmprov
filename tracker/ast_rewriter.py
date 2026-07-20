@@ -67,6 +67,7 @@ OMIT_FUNCTIONS: set[str] = {
     "replay_state",
     "replay_pipeline",
     "find_shortest_replay_path",
+    "create_independent_history_from_state",
     "create_pipeline",
     "load_pipeline_steps",
     "compare_states",

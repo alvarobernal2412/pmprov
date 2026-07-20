@@ -255,6 +255,37 @@ def _find_shortest_replay_path(self: "RuntimeTracker", state_id: str) -> list[st
     return [entry["step_id"] for entry in chain]
 
 
+def _create_independent_history_from_state(self: "RuntimeTracker", state_id: str, name: str) -> str:
+    """
+    Package the minimal step sequence needed to reproduce state_id as a brand-new,
+    independent AnalysisHistory (see docs/claude/checklist.md FC-1).
+
+    The source AnalysisHistory is never modified — this only reads it and writes a
+    new history/branch/states/steps/agents/environments/parameter-values row set,
+    reusing only the global Operation reference rows and the original artifact
+    file paths (never the source history's own provenance records).
+
+    Parameters
+    ----------
+    state_id:
+        UUID of the target AnalysisState (the "finding") to package.
+    name:
+        Human-readable name for the new AnalysisHistory.
+
+    Raises
+    ------
+    ValueError:
+        If state_id is unknown or is the root state (nothing to replay).
+    """
+    step_ids = self.find_shortest_replay_path(state_id)
+    if not step_ids:
+        raise ValueError(
+            f"No replayable steps found for state_id={state_id!r} "
+            "(unknown state, or it is the root state)."
+        )
+    return self.storage.materialize_curated_history(step_ids, name=name)
+
+
 def _replay_pipeline(
     self: "RuntimeTracker",
     pipeline_id: str,
@@ -323,3 +354,4 @@ RuntimeTracker.list_branches = _list_branches
 RuntimeTracker.replay_state = _replay_state
 RuntimeTracker.replay_pipeline = _replay_pipeline
 RuntimeTracker.find_shortest_replay_path = _find_shortest_replay_path
+RuntimeTracker.create_independent_history_from_state = _create_independent_history_from_state

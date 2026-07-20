@@ -149,3 +149,23 @@ def test_show_artifact_lifecycle_runs_without_error(rt, event_log, monkeypatch):
     except Exception as exc:
         pytest.fail(f"show_artifact_lifecycle raised: {exc}")
 
+
+def test_find_shortest_replay_path_returns_step_ids_in_order(rt, event_log):
+    rt.trace_step(func=lambda df: df.assign(x=1), func_name="step1",
+                  raw_line="df=step1(df)", args=[event_log], kwargs={})
+    rt.trace_step(func=lambda df: df.assign(y=2), func_name="step2",
+                  raw_line="df=step2(df)", args=[event_log.assign(x=1)], kwargs={})
+    target = rt._current_state_id
+    settle(rt)
+
+    path = rt.find_shortest_replay_path(target)
+
+    assert isinstance(path, list)
+    assert len(path) == 1  # step2's own artifact already covers it; only itself needed
+    detail = rt.describe_step(path[0])
+    assert detail["func_name"] == "step2"
+
+
+def test_find_shortest_replay_path_empty_for_unknown_state(rt):
+    assert rt.find_shortest_replay_path("does-not-exist") == []
+

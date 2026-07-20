@@ -237,6 +237,24 @@ def _reconstruct_args(
     return args, keyword, receiver
 
 
+def _find_shortest_replay_path(self: "RuntimeTracker", state_id: str) -> list[str]:
+    """
+    Return the ordered step_ids (oldest -> target) needed to reproduce state_id
+    from the nearest ancestor state that already has a materialized artifact.
+
+    Because the provenance structure is a tree (see docs/claude/domain-model.md),
+    this is the unique parent chain, not a general graph search. "Minimum" is
+    measured in step count, per docs/claude/checklist.md FC-1.
+
+    Parameters
+    ----------
+    state_id:
+        UUID of the target AnalysisState to reproduce.
+    """
+    chain = self.storage.load_ancestor_chain(state_id)
+    return [entry["step_id"] for entry in chain]
+
+
 def _replay_pipeline(
     self: "RuntimeTracker",
     pipeline_id: str,
@@ -304,3 +322,4 @@ RuntimeTracker.describe_step = _describe_step
 RuntimeTracker.list_branches = _list_branches
 RuntimeTracker.replay_state = _replay_state
 RuntimeTracker.replay_pipeline = _replay_pipeline
+RuntimeTracker.find_shortest_replay_path = _find_shortest_replay_path

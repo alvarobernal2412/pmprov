@@ -229,6 +229,128 @@ class DuckDBSQLiteBackend:
     def save_fragment_sync(self, fragment_id: str, pipeline_id: str, step_ids: list, position: int) -> None:
         self._executor.submit(self._write_fragment, fragment_id, pipeline_id, step_ids, position).result()
 
+    def materialize_curated_history(self, step_ids: list[str], name: str) -> str:
+        """
+        Clone the given ordered step_ids into a brand-new, independent
+        AnalysisHistory. Used by RuntimeTracker.create_independent_history_from_state
+        (FC-1, docs/claude/checklist.md) to package a "finding" as a self-contained,
+        replayable history that never needs to query the source history again.
+
+        Reuses the original operation_id values (operations/operation_types/
+        step_categories have no history_id — they are global reference data) and the
+        original artifact_states.content_ref file paths (no parquet duplication).
+        Everything else (history, branch, states, steps, agents, environments,
+        parameter values, deltas, artifact/artifact_state records) is cloned under a
+        new history_id.
+
+        Raises ValueError if step_ids is empty or any step_id is unknown.
+        Returns the new history_id.
+        """
+        if not step_ids:
+            raise ValueError("step_ids must be non-empty")
+
+        con = self._connect()
+        try:
+            new_history_id = str(uuid.uuid4())
+            new_branch_id = str(uuid.uuid4())
+            new_root_state_id = str(uuid.uuid4())
+
+            con.execute("INSERT INTO analysis_histories VALUES (?,?,?,?)",
+                        _p(new_history_id, name, _now(), ""))
+            con.execute("INSERT INTO analysis_branches VALUES (?,?,?,?)",
+                        _p(new_branch_id, new_history_id, "main", new_root_state_id))
+            con.execute("INSERT INTO analysis_states VALUES (?,?,?,?,?,?)",
+                        _p(new_root_state_id, new_history_id, new_branch_id, "", "", _now()))
+
+            prev_new_state_id = new_root_state_id
+            for step_id in step_ids:
+                step_row = con.execute(
+                    """SELECT output_state_id, agent_id, env_id, operation_id,
+                              func_name, raw_line, param_fingerprint
+                       FROM analysis_steps WHERE step_id = ?""",
+                    _p(step_id),
+                ).fetchone()
+                if step_row is None:
+                    raise ValueError(f"step_id {step_id!r} not found")
+                (orig_output_state_id, orig_agent_id, orig_env_id, operation_id,
+                 func_name, raw_line, param_fingerprint) = step_row
+
+                agent_row = con.execute(
+                    "SELECT agent_type, username FROM agents WHERE agent_id = ?",
+                    _p(orig_agent_id),
+                ).fetchone()
+                env_row = con.execute(
+                    "SELECT tool_version, library_versions, runtime FROM runtime_environments WHERE env_id = ?",
+                    _p(orig_env_id),
+                ).fetchone()
+
+                new_agent_id = str(uuid.uuid4())
+                con.execute("INSERT INTO agents VALUES (?,?,?,?)",
+                            _p(new_agent_id, new_history_id, agent_row[0], agent_row[1]))
+                new_env_id = str(uuid.uuid4())
+                con.execute("INSERT INTO runtime_environments VALUES (?,?,?,?,?)",
+                            _p(new_env_id, new_history_id, env_row[0], env_row[1], env_row[2]))
+
+                new_output_state_id = str(uuid.uuid4())
+                new_step_id = str(uuid.uuid4())
+                con.execute("INSERT INTO analysis_states VALUES (?,?,?,?,?,?)",
+                            _p(new_output_state_id, new_history_id, new_branch_id,
+                               new_step_id, "", _now()))
+                con.execute(
+                    "INSERT INTO analysis_steps VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    _p(new_step_id, new_history_id, prev_new_state_id, new_output_state_id,
+                       new_agent_id, new_env_id, operation_id, func_name,
+                       raw_line or "", param_fingerprint or "", _now()),
+                )
+
+                pvs = con.execute(
+                    "SELECT param_id, value_type, value_json FROM parameter_values WHERE step_id = ?",
+                    _p(step_id),
+                ).fetchall()
+                for param_id, value_type, value_json in pvs:
+                    con.execute("INSERT INTO parameter_values VALUES (?,?,?,?,?)",
+                                _p(str(uuid.uuid4()), new_step_id, param_id, value_type, value_json))
+
+                delta_row = con.execute(
+                    """SELECT kind, mutation_type, modification_type, rows_delta,
+                              columns_added, columns_removed, dtype_changes
+                       FROM deltas WHERE step_id = ?""",
+                    _p(step_id),
+                ).fetchone()
+                if delta_row:
+                    con.execute("INSERT INTO deltas VALUES (?,?,?,?,?,?,?,?,?)",
+                                _p(str(uuid.uuid4()), new_step_id, *delta_row))
+
+                art_row = con.execute(
+                    """SELECT a.name, a.artifact_type, ast.mime_type, ast.checksum,
+                              ast.content_ref, ast.size_bytes
+                       FROM artifact_states ast JOIN artifacts a ON a.artifact_id = ast.artifact_id
+                       WHERE ast.analysis_state_id = ?""",
+                    _p(orig_output_state_id),
+                ).fetchone()
+                if art_row:
+                    art_name, art_type, mime_type, checksum, content_ref, size_bytes = art_row
+                    new_artifact_id = str(uuid.uuid4())
+                    con.execute("INSERT INTO artifacts VALUES (?,?,?,?)",
+                                _p(new_artifact_id, new_history_id, art_name, art_type))
+                    con.execute(
+                        "INSERT INTO artifact_states VALUES (?,?,?,?,?,?,?)",
+                        _p(str(uuid.uuid4()), new_artifact_id, new_output_state_id,
+                           mime_type, checksum, content_ref, size_bytes),
+                    )
+
+                prev_new_state_id = new_output_state_id
+
+            con.execute("UPDATE analysis_histories SET active_state_id = ? WHERE history_id = ?",
+                        _p(prev_new_state_id, new_history_id))
+            _commit(con)
+            return new_history_id
+        except Exception as e:
+            log_storage_error(e, component="materialize_curated_history")
+            raise
+        finally:
+            con.close()
+
     # ------------------------------------------------------------------
     # Artifact persistence (synchronous)
     # ------------------------------------------------------------------

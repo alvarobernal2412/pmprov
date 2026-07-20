@@ -169,3 +169,36 @@ def test_find_shortest_replay_path_returns_step_ids_in_order(rt, event_log):
 def test_find_shortest_replay_path_empty_for_unknown_state(rt):
     assert rt.find_shortest_replay_path("does-not-exist") == []
 
+
+def test_create_independent_history_from_state_is_self_contained(rt, event_log):
+    rt.trace_step(func=lambda df: df.assign(x=1), func_name="step1",
+                  raw_line="df=step1(df)", args=[event_log], kwargs={})
+    target = rt._current_state_id
+    settle(rt)
+
+    new_history_id = rt.create_independent_history_from_state(target, name="curated-finding")
+    settle(rt)
+
+    assert new_history_id != rt._history.history_id
+
+    # The new history is independently queryable without the original.
+    con = rt.storage._connect(read_only=True)
+    try:
+        row = con.execute(
+            "SELECT name FROM analysis_histories WHERE history_id = ?", [new_history_id],
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "curated-finding"
+    finally:
+        con.close()
+
+
+def test_create_independent_history_from_state_rejects_root(rt):
+    with pytest.raises(ValueError):
+        rt.create_independent_history_from_state(rt._root_state_id, name="empty")
+
+
+def test_create_independent_history_from_state_rejects_unknown(rt):
+    with pytest.raises(ValueError):
+        rt.create_independent_history_from_state("does-not-exist", name="empty")
+

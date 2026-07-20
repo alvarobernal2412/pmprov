@@ -202,3 +202,28 @@ def test_create_independent_history_from_state_rejects_unknown(rt):
     with pytest.raises(ValueError):
         rt.create_independent_history_from_state("does-not-exist", name="empty")
 
+
+def test_create_independent_history_round_trip_via_runtime_tracker(rt, event_log):
+    rt.trace_step(func=lambda df: df.assign(x=1), func_name="step1",
+                  raw_line="df=step1(df)", args=[event_log], kwargs={})
+    rt.trace_step(func=lambda df: df.assign(y=2), func_name="step2",
+                  raw_line="df=step2(df)", args=[event_log.assign(x=1)], kwargs={})
+    target = rt._current_state_id
+    settle(rt)
+
+    new_history_id = rt.create_independent_history_from_state(target, name="round-trip-finding")
+    settle(rt)
+
+    graph = rt.storage.load_graph(new_history_id)
+
+    assert len(graph["states"]) == 2  # fresh root state + 1 cloned output state
+    assert len(graph["steps"]) == 1  # only step2 needed (its own artifact covers it)
+    assert graph["steps"][0]["func_name"] == "step2"
+
+    root_states = [s for s in graph["states"] if s["derived_from_state_id"] == ""]
+    assert len(root_states) == 1
+
+    cloned_state = [s for s in graph["states"] if s["state_id"] != root_states[0]["state_id"]][0]
+    assert cloned_state["derived_from_state_id"] == root_states[0]["state_id"]
+    assert cloned_state["produced_by_step_id"] == graph["steps"][0]["step_id"]
+

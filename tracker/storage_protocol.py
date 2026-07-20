@@ -57,6 +57,7 @@ class StorageBackend(Protocol):
     def save_fragment_sync(
         self, fragment_id: str, pipeline_id: str, step_ids: list, position: int
     ) -> None: ...
+    def materialize_curated_history(self, step_ids: list, name: str) -> str: ...
 
     # ------------------------------------------------------------------
     # Artifact I/O

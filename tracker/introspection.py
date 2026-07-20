@@ -276,6 +276,14 @@ def _create_independent_history_from_state(self: "RuntimeTracker", state_id: str
     ------
     ValueError:
         If state_id is unknown or is the root state (nothing to replay).
+
+    Invariant: because `load_ancestor_chain` stops at (and includes) the nearest
+    artifact-bearing ancestor, and today's regime always snapshots, the resulting
+    curated history is a single step whose output artifact is directly loadable
+    but whose input (the fresh root state) has none. A future replay engine must
+    load the first entry's output artifact rather than replay it from empty input;
+    only later entries in a longer future chain (once FC-3 configurable snapshotting
+    exists) are meant to be replayed.
     """
     step_ids = self.find_shortest_replay_path(state_id)
     if not step_ids:

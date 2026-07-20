@@ -543,6 +543,71 @@ class DuckDBSQLiteBackend:
             "delta": delta,
         }
 
+    def load_ancestor_chain(self, state_id: str) -> list[dict]:
+        """
+        Walk the parent chain from state_id back toward the root, stopping at
+        (and including) the nearest ancestor that already has a materialized
+        artifact. Returns [] if state_id is unknown or is the root state.
+
+        Returns
+        -------
+        Ordered list, oldest -> target, of
+        {"state_id", "step_id", "func_name", "raw_line", "has_artifact"}.
+        """
+        con = self._connect(read_only=True)
+        try:
+            chain: list[dict] = []
+            current_id = state_id
+            seen: set[str] = set()
+
+            while current_id and current_id not in seen:
+                seen.add(current_id)
+
+                row = con.execute(
+                    """
+                    SELECT st.produced_by_step_id, s.step_id, s.func_name, s.raw_line,
+                           s.input_state_id
+                    FROM analysis_states st
+                    LEFT JOIN analysis_steps s ON s.output_state_id = st.state_id
+                    WHERE st.state_id = ?
+                    """,
+                    _p(current_id),
+                ).fetchone()
+
+                if row is None:
+                    return []  # unknown state_id
+
+                produced_by_step_id, step_id, func_name, raw_line, input_state_id = row
+                if not produced_by_step_id:
+                    break  # reached the root — no step to record for it
+
+                has_artifact = con.execute(
+                    """
+                    SELECT 1 FROM artifact_states
+                    WHERE analysis_state_id = ? AND content_ref IS NOT NULL
+                    LIMIT 1
+                    """,
+                    _p(current_id),
+                ).fetchone() is not None
+
+                chain.append({
+                    "state_id": current_id,
+                    "step_id": step_id,
+                    "func_name": func_name,
+                    "raw_line": raw_line,
+                    "has_artifact": has_artifact,
+                })
+
+                if has_artifact:
+                    break  # nearest usable snapshot found — stop walking further back
+
+                current_id = input_state_id
+
+            chain.reverse()
+            return chain
+        finally:
+            con.close()
+
     def load_step_detail(self, step_id: str) -> dict:
         """
         Return full metadata for a step_id.

@@ -245,6 +245,12 @@ class DuckDBSQLiteBackend:
 
         Raises ValueError if step_ids is empty or any step_id is unknown.
         Returns the new history_id.
+
+        Invariant: in today's always-snapshot regime, the source chain always starts
+        at an artifact-bearing ancestor, so the cloned history's first step's output
+        artifact is directly loadable while its input (the fresh root state) has no
+        artifact of its own. Consumers must load the first step's output rather than
+        attempt to replay it from an empty input.
         """
         if not step_ids:
             raise ValueError("step_ids must be non-empty")
@@ -295,7 +301,7 @@ class DuckDBSQLiteBackend:
                 new_step_id = str(uuid.uuid4())
                 con.execute("INSERT INTO analysis_states VALUES (?,?,?,?,?,?)",
                             _p(new_output_state_id, new_history_id, new_branch_id,
-                               new_step_id, "", _now()))
+                               new_step_id, prev_new_state_id, _now()))
                 con.execute(
                     "INSERT INTO analysis_steps VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     _p(new_step_id, new_history_id, prev_new_state_id, new_output_state_id,

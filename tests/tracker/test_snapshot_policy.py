@@ -40,3 +40,54 @@ def test_snapshot_policy_rejects_invalid_mode():
 def test_snapshot_policy_for_type_rejects_invalid_mode():
     with pytest.raises(ValueError):
         snapshot_policy_for_type("some_type", "sometimes")
+
+
+import pandas as pd
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
+from tracker.runtime import RuntimeTracker
+
+
+@pytest.fixture
+def rt(tmp_path):
+    s = StorageBackend(db_path=tmp_path / "prov.db", artifact_dir=tmp_path / "art")
+    return RuntimeTracker(storage=s, session_id="t", history_name="test")
+
+
+@pytest.fixture
+def event_log():
+    return pd.DataFrame({"case:concept:name": ["A1", "A1"], "concept:name": ["a", "b"]})
+
+
+def settle(rt):
+    rt.storage._executor.submit(lambda: None).result()
+
+
+def test_never_policy_skips_artifact_but_still_records_step(rt, event_log):
+    snapshot_policy("no_snapshot_step", "never")
+
+    output = rt.trace_step(
+        func=lambda df: df.assign(x=1), func_name="no_snapshot_step",
+        raw_line="df=no_snapshot_step(df)", args=[event_log], kwargs={},
+    )
+    state_id = rt._current_state_id
+    settle(rt)
+
+    assert output is not None  # user code result is unaffected
+
+    detail = rt.describe_state(state_id)
+    assert detail != {}  # AnalysisStep/AnalysisState were still recorded
+    assert detail["func_name"] == "no_snapshot_step"
+
+    assert rt.storage.load_output_artifact_state_id(state_id) is None
+
+
+def test_default_policy_still_snapshots(rt, event_log):
+    output = rt.trace_step(
+        func=lambda df: df.assign(x=1), func_name="default_snapshot_step",
+        raw_line="df=default_snapshot_step(df)", args=[event_log], kwargs={},
+    )
+    state_id = rt._current_state_id
+    settle(rt)
+
+    assert output is not None
+    assert rt.storage.load_output_artifact_state_id(state_id) is not None

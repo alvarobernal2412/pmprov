@@ -80,6 +80,8 @@ OMIT_FUNCTIONS: set[str] = {
     "load_pruned_view",
     "operation_type",
     "step_category",
+    "snapshot_policy",
+    "snapshot_policy_for_type",
     "omit_functions",
     "enable_logging",
     "get_logger",

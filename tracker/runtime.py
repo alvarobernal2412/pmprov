@@ -64,6 +64,7 @@ from tracker.delta_calculator import compute_delta
 from tracker.logger import log_trace_warning
 from tracker.operation_registry import lookup as _lookup_operation_type, lookup_category as _lookup_category
 from tracker.snapshot_engine import capture_snapshot
+from tracker.snapshot_policy import should_snapshot
 from tracker.storage import StorageBackend
 
 
@@ -387,7 +388,11 @@ class RuntimeTracker:
         artifact_records: dict = {}
         artifact_path: Optional[str] = None
         _artifact_kind = post_snap.get("kind")
-        if _artifact_kind in {"dataframe", "figure"} and output is not None:
+        if (
+            _artifact_kind in {"dataframe", "figure"}
+            and output is not None
+            and should_snapshot(func_name, op_type.name)
+        ):
             try:
                 if _artifact_kind == "dataframe":
                     _pre = pre_snaps.get("arg_0", {})

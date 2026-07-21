@@ -79,3 +79,61 @@ def test_compute_pruned_graph_stops_collapse_at_branch_point():
     )
     edge_step_ids = {tuple(e["collapsed_step_ids"]) for e in result["edges"]}
     assert edge_step_ids == {("s1",), ("s2",), ("s3",)}
+
+
+import pandas as pd
+import pytest
+from tracker.storage import DuckDBSQLiteBackend as StorageBackend
+from tracker.runtime import RuntimeTracker
+import tracker.pruning  # noqa: F401 — patches methods onto RuntimeTracker
+
+
+@pytest.fixture
+def rt(tmp_path):
+    s = StorageBackend(db_path=tmp_path / "prov.db", artifact_dir=tmp_path / "art")
+    return RuntimeTracker(storage=s, session_id="t", history_name="test")
+
+
+@pytest.fixture
+def event_log():
+    return pd.DataFrame({"case:concept:name": ["A1", "A1"], "concept:name": ["a", "b"]})
+
+
+def settle(rt):
+    rt.storage._executor.submit(lambda: None).result()
+
+
+def test_build_pruned_view_hides_dead_end_subtree(rt, event_log):
+    rt.trace_step(func=lambda df: df.assign(x=1), func_name="step1",
+                  raw_line="df=step1(df)", args=[event_log], kwargs={})
+    dead_end_state = rt._current_state_id
+    rt.trace_step(func=lambda df: df.assign(y=2), func_name="dead_end_step",
+                  raw_line="df=dead_end_step(df)", args=[event_log.assign(x=1)], kwargs={})
+    dead_end_leaf = rt._current_state_id
+    settle(rt)
+
+    view = rt.build_pruned_view(hidden_state_ids=[dead_end_leaf])
+    node_ids = {n["state_id"] for n in view["nodes"]}
+
+    assert dead_end_leaf not in node_ids
+    assert dead_end_state in node_ids  # kept: only the leaf was hidden, not its parent
+    assert view["config"]["hidden_state_ids"] == [dead_end_leaf]
+
+
+def test_save_and_load_pruned_view_round_trips(rt, event_log):
+    rt.trace_step(func=lambda df: df.assign(x=1), func_name="step1",
+                  raw_line="df=step1(df)", args=[event_log], kwargs={})
+    settle(rt)
+
+    view = rt.build_pruned_view(group_by_category=True)
+    view_id = rt.save_pruned_view(view, name="my-curated-view")
+    settle(rt)
+
+    reloaded = rt.load_pruned_view(view_id)
+    assert reloaded["config"]["group_by_category"] is True
+    assert {n["state_id"] for n in reloaded["nodes"]} == {n["state_id"] for n in view["nodes"]}
+
+
+def test_load_pruned_view_rejects_unknown_id(rt):
+    with pytest.raises(ValueError):
+        rt.load_pruned_view("does-not-exist")

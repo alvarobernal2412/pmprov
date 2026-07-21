@@ -39,6 +39,7 @@ from tracker.ast_rewriter import OMIT_FUNCTIONS
 from tracker.kernel_hooks import init_jupyter, init_marimo, patch_marimo_ast_compile, _NoOpRuntime
 from tracker.logger import get_logger, enable_logging
 from tracker.operation_registry import operation_type, step_category
+from tracker.snapshot_policy import snapshot_policy, snapshot_policy_for_type
 from tracker.runtime import RuntimeTracker
 from tracker.storage import DuckDBSQLiteBackend, StorageBackend
 import tracker.visualizations  # noqa: F401 — patches show_graph / show_graph_widget onto RuntimeTracker
@@ -70,6 +71,8 @@ __all__ = [
     "omit_functions",
     "operation_type",
     "step_category",
+    "snapshot_policy",
+    "snapshot_policy_for_type",
     "get_logger",
     "enable_logging",
     "RuntimeTracker",

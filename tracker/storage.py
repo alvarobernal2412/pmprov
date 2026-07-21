@@ -96,7 +96,7 @@ def _commit(con) -> None:
 
 
 # ------------------------------------------------------------------
-# DDL — 14 per-entity tables
+# DDL — 15 per-entity tables
 # ------------------------------------------------------------------
 
 _DDL = """
@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS deltas (delta_id VARCHAR PRIMARY KEY, step_id VARCHAR
 CREATE TABLE IF NOT EXISTS pipelines (pipeline_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, name VARCHAR NOT NULL, created_at VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS pipeline_fragments (fragment_id VARCHAR PRIMARY KEY, pipeline_id VARCHAR NOT NULL, step_ids VARCHAR NOT NULL, position INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS step_categories (category_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL);
+CREATE TABLE IF NOT EXISTS pruned_views (view_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, name VARCHAR NOT NULL, created_at VARCHAR NOT NULL, config_json VARCHAR NOT NULL);
 """
 
 
@@ -228,6 +229,9 @@ class DuckDBSQLiteBackend:
 
     def save_fragment_sync(self, fragment_id: str, pipeline_id: str, step_ids: list, position: int) -> None:
         self._executor.submit(self._write_fragment, fragment_id, pipeline_id, step_ids, position).result()
+
+    def save_pruned_view_sync(self, view_id: str, history_id: str, name: str, config: dict) -> None:
+        self._executor.submit(self._write_pruned_view, view_id, history_id, name, config).result()
 
     def materialize_curated_history(self, step_ids: list[str], name: str) -> str:
         """
@@ -945,6 +949,27 @@ class DuckDBSQLiteBackend:
         finally:
             con.close()
 
+    def load_pruned_view_config(self, view_id: str) -> Optional[dict]:
+        """Return a saved pruned view's config, or None if view_id is unknown."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT history_id, name, created_at, config_json FROM pruned_views WHERE view_id = ?",
+                _p(view_id),
+            ).fetchone()
+        finally:
+            con.close()
+        if row is None:
+            return None
+        history_id, name, created_at, config_json = row
+        return {
+            "view_id": view_id,
+            "history_id": history_id,
+            "name": name,
+            "created_at": created_at,
+            "config": json.loads(config_json),
+        }
+
     def load_pipeline_steps(self, pipeline_id: str) -> list[dict]:
         """Return step records for a pipeline in fragment order."""
         con = self._connect(read_only=True)
@@ -1165,5 +1190,17 @@ class DuckDBSQLiteBackend:
         except Exception as e:
             log_storage_error(e, component="_write_fragment", fragment_id=fragment_id)
             raise  # store exception on the Future; callers that call .result() will see it
+        finally:
+            con.close()
+
+    def _write_pruned_view(self, view_id, history_id, name, config) -> None:
+        con = self._connect()
+        try:
+            con.execute("INSERT INTO pruned_views VALUES (?,?,?,?,?)",
+                        _p(view_id, history_id, name, _now(), json.dumps(config)))
+            _commit(con)
+        except Exception as e:
+            log_storage_error(e, component="save_pruned_view_sync", view_id=view_id)
+            raise
         finally:
             con.close()

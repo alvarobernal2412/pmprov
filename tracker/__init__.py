@@ -44,6 +44,7 @@ from tracker.storage import DuckDBSQLiteBackend, StorageBackend
 import tracker.visualizations  # noqa: F401 — patches show_graph / show_graph_widget onto RuntimeTracker
 import tracker.introspection  # noqa: F401 — patches describe_state / list_branches onto RuntimeTracker
 import tracker.comparison  # noqa: F401 — patches compare_states / compare_histories onto RuntimeTracker
+import tracker.pruning  # noqa: F401 — patches build_pruned_view / save_pruned_view / load_pruned_view onto RuntimeTracker
 
 
 def omit_functions(*names: str) -> None:

@@ -13,6 +13,7 @@ history live.
 """
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, Any, Optional
 from collections import defaultdict
 
@@ -40,6 +41,11 @@ def _cascade_hidden_state_ids(steps: list[dict], seed_hidden_state_ids: set) -> 
                 hidden.add(out)
                 stack.append(out)
     return hidden
+
+
+def _collapsed_label(category: Optional[str], count: int) -> str:
+    """Presentation label for a synthetic edge collapsing `count` same-category steps."""
+    return f"[{category or 'uncategorized'}] {count} steps"
 
 
 def _compute_pruned_graph(
@@ -115,7 +121,7 @@ def _compute_pruned_graph(
             "input_state_id": chain[0]["input_state_id"],
             "output_state_id": chain[-1]["output_state_id"],
             "func_name": chain[0]["func_name"] if len(chain) == 1
-                else f"[{categories_by_step_id.get(chain[0]['step_id']) or 'uncategorized'}] {len(chain)} steps",
+                else _collapsed_label(categories_by_step_id.get(chain[0]["step_id"]), len(chain)),
             "category": categories_by_step_id.get(chain[0]["step_id"]),
             "collapsed_step_ids": [c["step_id"] for c in chain],
         })
@@ -231,7 +237,6 @@ def _save_pruned_view(self: "RuntimeTracker", pruned_view: dict, name: str) -> s
     name:
         Human-readable name for the saved view.
     """
-    import uuid
     view_id = str(uuid.uuid4())
     self.storage.save_pruned_view_sync(
         view_id, self._history.history_id, name, pruned_view["config"]

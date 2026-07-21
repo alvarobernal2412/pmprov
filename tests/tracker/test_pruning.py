@@ -137,3 +137,28 @@ def test_save_and_load_pruned_view_round_trips(rt, event_log):
 def test_load_pruned_view_rejects_unknown_id(rt):
     with pytest.raises(ValueError):
         rt.load_pruned_view("does-not-exist")
+
+
+def test_load_pruned_view_reflects_live_history_not_stale_snapshot(rt, event_log):
+    rt.trace_step(func=lambda df: df.assign(x=1), func_name="step1",
+                  raw_line="df=step1(df)", args=[event_log], kwargs={})
+    settle(rt)
+
+    view = rt.build_pruned_view()
+    view_id = rt.save_pruned_view(view, name="live-view")
+    settle(rt)
+
+    rt.trace_step(func=lambda df: df.assign(y=2), func_name="step2",
+                  raw_line="df=step2(df)", args=[event_log.assign(x=1)], kwargs={})
+    second_state = rt._current_state_id
+    settle(rt)
+
+    reloaded = rt.load_pruned_view(view_id)
+    node_ids = {n["state_id"] for n in reloaded["nodes"]}
+    edge_step_ids = {sid for e in reloaded["edges"] for sid in e["collapsed_step_ids"]}
+
+    assert second_state in node_ids
+    assert node_ids != {n["state_id"] for n in view["nodes"]}
+    assert "step2" in {e["func_name"] for e in reloaded["edges"]}
+    assert len(reloaded["edges"]) > len(view["edges"])
+    assert edge_step_ids  # sanity: collapsed_step_ids populated

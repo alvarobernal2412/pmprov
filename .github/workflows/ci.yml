@@ -29,9 +29,30 @@ jobs:
       - name: Run tests 🧪
         run: uv run pytest
 
-  build:
+  e2e:
     runs-on: ubuntu-latest
     needs: test
+    steps:
+      - name: Checkout ⬇️
+        uses: actions/checkout@v7.0.0
+
+      - name: Set up Python 🐍
+        uses: actions/setup-python@v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv 📦
+        uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Install dependencies 📦
+        run: uv sync --all-extras --dev
+
+      - name: Run e2e demo notebooks 🧪
+        run: uv run python scripts/run_e2e_demos.py
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [test, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     outputs:
       already-published: ${{ steps.version-check.outputs.already-published }}

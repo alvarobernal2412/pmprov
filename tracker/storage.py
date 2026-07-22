@@ -67,6 +67,16 @@ class _LockedConnection:
     def __getattr__(self, name):
         return getattr(self._con, name)
 
+    def __enter__(self):
+        # Defined explicitly so `with self._connect() as con:` (no call site uses
+        # this today) goes through this proxy's close() and releases the lock.
+        # Without this, __getattr__ would delegate to the raw DuckDB connection's
+        # __enter__/__exit__, silently unwrapping the proxy and leaking the lock.
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
 
 # ------------------------------------------------------------------
 # Helpers

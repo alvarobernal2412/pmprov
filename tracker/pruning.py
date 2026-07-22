@@ -130,17 +130,19 @@ def _compute_pruned_graph(
 
 
 def _resolve_hidden_state_ids(
-    storage: Any,
-    history_id: str,
+    states: list[dict],
+    steps: list[dict],
     hidden_state_ids: Optional[list],
     hidden_step_ids: Optional[list],
     hidden_branch_ids: Optional[list],
 ) -> set:
-    """Combine all three hide-inputs into one cascaded set of hidden state_ids."""
-    graph = storage.load_graph(history_id=history_id)
-    steps = graph["steps"]
-    states = graph["states"]
+    """
+    Combine all three hide-inputs into one cascaded set of hidden state_ids.
 
+    Takes an already-loaded (states, steps) pair rather than a storage/history_id
+    to load itself — callers share one storage.load_graph() call with the rest of
+    the rendering path instead of each independently re-fetching the same graph.
+    """
     seed = set(hidden_state_ids or [])
 
     if hidden_step_ids:
@@ -165,7 +167,7 @@ def _render_pruned_view(storage: Any, history_id: str, config: dict) -> dict:
     states, steps = graph["states"], graph["steps"]
 
     hidden_state_ids = _resolve_hidden_state_ids(
-        storage, history_id,
+        states, steps,
         config.get("hidden_state_ids"), config.get("hidden_step_ids"),
         config.get("hidden_branch_ids"),
     )

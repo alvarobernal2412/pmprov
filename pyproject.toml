@@ -9,7 +9,7 @@ dependencies = [
     "marimo==0.23.14",
     "matplotlib==3.11.0",
     "pandas==3.0.3",
-    "plotly==6.8.0",
+    "plotly==6.9.0",
     "pyarrow==24.0.0",
     "pydantic==2.13.4",
 ]

@@ -29,6 +29,44 @@ except ImportError:
     import sqlite3 as _sqlite3  # type: ignore[no-redef]
     _BACKEND = "sqlite"
 
+# Serializes a DuckDB connection's full open-to-close lifetime across every
+# DuckDBSQLiteBackend instance in this process. Locking only the connect()
+# call (an earlier, insufficient attempt at this fix) still let two
+# connections to the same file be simultaneously *open* on different
+# threads, which DuckDB can reject outright (config mismatch) or, on
+# Windows, fail with a file-in-use IOError even when configs match. Holding
+# the lock for the whole lifetime, via _LockedConnection below, means only
+# one connection to a given file is ever open at all — see
+# tests/tracker/test_storage_concurrency.py.
+_connect_lock = threading.Lock()
+
+
+class _LockedConnection:
+    """
+    Transparent proxy around a DB connection that releases `_connect_lock`
+    when `close()` is called. DuckDB's connection object doesn't allow
+    attribute assignment (it's a C-extension type), so `close` can't be
+    monkey-patched directly onto it — this wrapper exists instead.
+    """
+
+    __slots__ = ("_con", "_lock", "_released")
+
+    def __init__(self, con, lock: threading.Lock) -> None:
+        object.__setattr__(self, "_con", con)
+        object.__setattr__(self, "_lock", lock)
+        object.__setattr__(self, "_released", False)
+
+    def close(self) -> None:
+        try:
+            self._con.close()
+        finally:
+            if not self._released:
+                self._lock.release()
+                object.__setattr__(self, "_released", True)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
 
 # ------------------------------------------------------------------
 # Helpers
@@ -100,8 +138,16 @@ class DuckDBSQLiteBackend:
     # ------------------------------------------------------------------
 
     def _connect(self, read_only: bool = False):
+        # `read_only` is accepted (not removed) so every existing call site keeps
+        # working unchanged, but DuckDB always connects with a uniform config —
+        # see _connect_lock's docstring-comment above for why. Every caller
+        # already does `con = self._connect(...); try: ...; finally: con.close()`,
+        # so wrapping the connection to release the lock on close() requires no
+        # changes at any of those call sites.
+        del read_only
         if _BACKEND == "duckdb":
-            return _duckdb.connect(str(self.db_path), read_only=read_only)
+            _connect_lock.acquire()
+            return _LockedConnection(_duckdb.connect(str(self.db_path)), _connect_lock)
         return _sqlite3.connect(str(self.db_path))
 
     def _init_schema(self) -> None:

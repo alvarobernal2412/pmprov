@@ -10,7 +10,7 @@ dependencies = [
     "matplotlib==3.11.0",
     "pandas==3.0.3",
     "plotly==6.9.0",
-    "pyarrow==24.0.0",
+    "pyarrow==25.0.0",
     "pydantic==2.13.4",
 ]
 
@@ -18,7 +18,7 @@ dependencies = [
 # Preferred storage backend (also enables native Parquet querying)
 duckdb = ["duckdb==1.5.4"]
 # Required for pandas DataFrame → Parquet serialisation
-parquet = ["pyarrow==24.0.0"]
+parquet = ["pyarrow==25.0.0"]
 # In-memory graph support for load_graph() → networkx; matplotlib for show_graph()
 graph = [
     "networkx==3.6.1",
@@ -29,7 +29,7 @@ widgets = [
     "ipywidgets==8.1.8",
 ]
 # Install everything at once: uv pip install -e ".[full]"
-full = ["duckdb==1.5.4", "pyarrow==24.0.0", "networkx==3.6.1", "matplotlib==3.11.0", "ipywidgets==8.1.8"]
+full = ["duckdb==1.5.4", "pyarrow==25.0.0", "networkx==3.6.1", "matplotlib==3.11.0", "ipywidgets==8.1.8"]
 
 [dependency-groups]
 dev = [

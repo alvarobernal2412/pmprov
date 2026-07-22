@@ -36,6 +36,8 @@ dev = [
     "pytest==9.1.1",
     "pre-commit==4.6.0",
     "networkx==3.6.1",
+    "nbconvert==7.17.1",
+    "ipykernel==7.3.0",
 ]
 
 [build-system]

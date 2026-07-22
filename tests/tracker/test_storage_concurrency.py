@@ -69,3 +69,44 @@ def test_concurrent_reads_and_writes_do_not_race_on_connection_config(tmp_path):
         t.join(timeout=5)
 
     assert errors == [], f"Concurrent read/write connections raced: {errors[0]}"
+
+
+def test_connect_lock_is_released_when_connect_itself_raises(tmp_path, monkeypatch):
+    """
+    A failed duckdb.connect() (e.g. corrupt/locked file, disk error) must not
+    leave _connect_lock held — otherwise every later _connect() call in the
+    process deadlocks forever, since nothing else would ever release it.
+    """
+    import tracker.storage as storage_module
+
+    storage = StorageBackend(db_path=tmp_path / "prov.db", artifact_dir=tmp_path / "art")
+
+    real_connect = storage_module._duckdb.connect
+    should_fail = {"value": True}
+
+    def _flaky_connect(*args, **kwargs):
+        if should_fail["value"]:
+            should_fail["value"] = False
+            raise RuntimeError("simulated connect failure")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(storage_module._duckdb, "connect", _flaky_connect)
+
+    with pytest.raises(RuntimeError, match="simulated connect failure"):
+        storage._connect()
+
+    # If the lock leaked, this call hangs forever — bound it with a thread + join
+    # timeout so the test fails loudly instead of hanging the whole suite.
+    result: dict = {}
+
+    def _try_reconnect():
+        con = storage._connect()
+        result["ok"] = True
+        con.close()
+
+    t = threading.Thread(target=_try_reconnect, daemon=True)
+    t.start()
+    t.join(timeout=5)
+
+    assert not t.is_alive(), "storage._connect() hung — _connect_lock was leaked"
+    assert result.get("ok") is True

@@ -147,7 +147,16 @@ class DuckDBSQLiteBackend:
         del read_only
         if _BACKEND == "duckdb":
             _connect_lock.acquire()
-            return _LockedConnection(_duckdb.connect(str(self.db_path)), _connect_lock)
+            try:
+                con = _duckdb.connect(str(self.db_path))
+            except Exception:
+                # Release immediately on a failed connect — otherwise every
+                # later _connect() call deadlocks forever, since nothing else
+                # will ever release a lock acquired for a connection that was
+                # never actually created.
+                _connect_lock.release()
+                raise
+            return _LockedConnection(con, _connect_lock)
         return _sqlite3.connect(str(self.db_path))
 
     def _init_schema(self) -> None:

@@ -250,11 +250,21 @@ class DuckDBSQLiteBackend:
         Raises ValueError if step_ids is empty or any step_id is unknown.
         Returns the new history_id.
 
-        Invariant: in today's always-snapshot regime, the source chain always starts
-        at an artifact-bearing ancestor, so the cloned history's first step's output
-        artifact is directly loadable while its input (the fresh root state) has no
-        artifact of its own. Consumers must load the first step's output rather than
-        attempt to replay it from an empty input.
+        Invariant (holds only when the source chain's first step has an artifact —
+        no longer guaranteed unconditionally now that FC-3's snapshot_policy /
+        snapshot_policy_for_type can disable snapshotting per function or
+        OperationType): if the first step's output does have an artifact, the
+        cloned history's first step's output artifact is directly loadable while
+        its input (the fresh root state) has no artifact of its own — consumers
+        must load that first step's output rather than attempt to replay it from
+        an empty input. If snapshotting was disabled for the entire source chain,
+        the cloned history's first step has no artifact either, and it is not
+        self-contained/loadable this way; callers should not assume the chain
+        always starts at an artifact-bearing ancestor. See
+        RuntimeTracker.create_independent_history_from_state, which rejects the
+        no-artifact-anywhere-on-the-chain case explicitly so this method's own
+        callers get a clear error instead of silently building a
+        non-self-contained history.
         """
         if not step_ids:
             raise ValueError("step_ids must be non-empty")
@@ -680,6 +690,14 @@ class DuckDBSQLiteBackend:
         Walk the parent chain from state_id back toward the root, stopping at
         (and including) the nearest ancestor that already has a materialized
         artifact. Returns [] if state_id is unknown or is the root state.
+
+        If NO ancestor on the chain has a materialized artifact (e.g. FC-3's
+        snapshot_policy/snapshot_policy_for_type disabled snapshotting for every
+        operation involved), this walks all the way back to — but not including —
+        the root, and every returned entry has has_artifact=False. Callers that
+        need an artifact-bearing starting point (e.g.
+        RuntimeTracker.create_independent_history_from_state) must check
+        chain[0]["has_artifact"] rather than assume it's always True.
 
         Returns
         -------

@@ -275,22 +275,36 @@ def _create_independent_history_from_state(self: "RuntimeTracker", state_id: str
     Raises
     ------
     ValueError:
-        If state_id is unknown or is the root state (nothing to replay).
+        If state_id is unknown or is the root state (nothing to replay), OR if
+        no state on the replay chain has a materialized artifact — this can
+        happen now that FC-3's snapshot_policy/snapshot_policy_for_type can
+        disable snapshotting for every operation involved, and would otherwise
+        silently produce a curated history with no loadable starting artifact,
+        breaking the "self-contained, replayable" guarantee this method exists
+        to provide.
 
-    Invariant: because `load_ancestor_chain` stops at (and includes) the nearest
-    artifact-bearing ancestor, and today's regime always snapshots, the resulting
-    curated history is a single step whose output artifact is directly loadable
-    but whose input (the fresh root state) has none. A future replay engine must
-    load the first entry's output artifact rather than replay it from empty input;
-    only later entries in a longer future chain (once FC-3 configurable snapshotting
-    exists) are meant to be replayed.
+    Invariant: when `load_ancestor_chain` finds an artifact-bearing ancestor
+    (chain[0]["has_artifact"] is True — the normal case, since snapshotting
+    defaults to always-on), the resulting curated history's first step's output
+    artifact is directly loadable while its input (the fresh root state) has
+    none. A replay engine must load that first entry's output artifact rather
+    than replay it from an empty input; only later entries are meant to be
+    replayed.
     """
-    step_ids = self.find_shortest_replay_path(state_id)
-    if not step_ids:
+    chain = self.storage.load_ancestor_chain(state_id)
+    if not chain:
         raise ValueError(
             f"No replayable steps found for state_id={state_id!r} "
             "(unknown state, or it is the root state)."
         )
+    if not chain[0]["has_artifact"]:
+        raise ValueError(
+            f"No artifact-bearing ancestor found for state_id={state_id!r} — "
+            "snapshotting appears disabled (see tracker.snapshot_policy) for "
+            "every operation on this replay chain, so the resulting curated "
+            "history would have no loadable starting point."
+        )
+    step_ids = [entry["step_id"] for entry in chain]
     return self.storage.materialize_curated_history(step_ids, name=name)
 
 

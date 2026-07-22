@@ -203,6 +203,26 @@ def test_create_independent_history_from_state_rejects_unknown(rt):
         rt.create_independent_history_from_state("does-not-exist", name="empty")
 
 
+def test_create_independent_history_from_state_rejects_no_artifact_chain(rt, event_log):
+    """
+    If snapshotting was disabled (FC-3's snapshot_policy) for every operation on
+    the replay chain, no ancestor has an artifact — create_independent_history_
+    from_state must reject this rather than silently produce a curated history
+    with no loadable starting point.
+    """
+    from tracker.snapshot_policy import snapshot_policy
+
+    snapshot_policy("no_snapshot_step", "never")
+
+    rt.trace_step(func=lambda df: df.assign(x=1), func_name="no_snapshot_step",
+                  raw_line="df=no_snapshot_step(df)", args=[event_log], kwargs={})
+    target = rt._current_state_id
+    settle(rt)
+
+    with pytest.raises(ValueError, match="artifact"):
+        rt.create_independent_history_from_state(target, name="should-fail")
+
+
 def test_create_independent_history_round_trip_via_runtime_tracker(rt, event_log):
     rt.trace_step(func=lambda df: df.assign(x=1), func_name="step1",
                   raw_line="df=step1(df)", args=[event_log], kwargs={})

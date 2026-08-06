@@ -110,7 +110,12 @@ def _capture_env() -> RuntimeEnvironment:
         if mod is None:
             try:
                 mod = __import__(lib)
-            except ImportError:
+            except Exception:
+                # A library can fail for reasons other than not being
+                # installed (e.g. pm4py's import chain probes psutil for
+                # the parent process, which can be unresolvable in a
+                # sandboxed/containerized session) — env capture is best
+                # effort, so skip that one entry rather than aborting init.
                 continue
         libs[lib] = getattr(mod, "__version__", "?")
 

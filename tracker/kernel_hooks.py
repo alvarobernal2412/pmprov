@@ -36,6 +36,7 @@ from __future__ import annotations
 import ast
 import builtins
 import uuid
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -165,7 +166,12 @@ def init_marimo(
 
     This function must be called from the init cell (the first cell in the
     notebook).  The AST transformation itself is activated separately at
-    module level via ``patch_marimo_ast_compile()``.
+    module level via ``patch_marimo_ast_compile()`` — if that was never
+    called (or ran too late, e.g. inside a cell instead of at module level),
+    this still returns a working ``RuntimeTracker``, but no cell's code will
+    ever actually be rewritten, so zero steps get recorded and nothing
+    signals *why*. A warning is emitted in that case since it's otherwise a
+    silent, hard-to-diagnose no-op.
 
     Parameters
     ----------
@@ -187,6 +193,15 @@ def init_marimo(
     re-executions within the same session can be identified and parent-child
     links in the edges table map directly onto Marimo's execution graph.
     """
+    if not _MARIMO_PATCHED:
+        warnings.warn(
+            "init_marimo() was called but patch_marimo_ast_compile() has not "
+            "run yet — no cell code will be provenance-tracked until it does. "
+            "Call patch_marimo_ast_compile() at module level, before "
+            "`app = marimo.App(...)` (see this module's docstring).",
+            stacklevel=2,
+        )
+
     storage = DuckDBSQLiteBackend(db_path=db_path, artifact_dir=artifact_dir)
     session_id = str(uuid.uuid4())
     runtime = RuntimeTracker(

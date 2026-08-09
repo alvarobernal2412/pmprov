@@ -1,4 +1,18 @@
+import sys
+from pathlib import Path
+
 import marimo
+
+# Must run at module level, before marimo compiles any cell below — see
+# provenance_demo.py's top-of-file comment for why (this file had the same
+# sitecustomize.py-dependent gap, with tracking never actually activating
+# outside one developer's local venv).
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+from tracker.kernel_hooks import patch_marimo_ast_compile  # noqa: E402
+
+patch_marimo_ast_compile()
 
 __generated_with = "0.23.9"
 app = marimo.App(width="medium")

@@ -1,4 +1,22 @@
+import sys
+from pathlib import Path
+
 import marimo
+
+# Must run at module level, before marimo compiles any cell below — this is
+# what actually turns on AST-level provenance tracing. init_marimo() (called
+# inside a cell) only creates the RuntimeTracker; without this patch no
+# pipeline step is ever recorded, no matter what runs afterward. This file
+# used to rely on a sitecustomize.py hook to do this instead — that file
+# only ever existed in one developer's local venv (untracked, not part of
+# the package build), so tracking silently never activated anywhere else,
+# including CI (see docs/claude/testing-plan-fc1-3.md item 8).
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+from tracker.kernel_hooks import patch_marimo_ast_compile  # noqa: E402
+
+patch_marimo_ast_compile()
 
 __generated_with = "0.23.9"
 app = marimo.App(width="medium")
@@ -52,8 +70,9 @@ def _(PROJECT_ROOT):
     (PROJECT_ROOT / "examples" / "marimo" / "artifacts").mkdir(parents=True, exist_ok=True)
 
     # init_marimo() is in OMIT_FUNCTIONS — not transformed by ProvTrackTransformer.
-    # It creates the RuntimeTracker and sets tracker.kernel_hooks._runtime = rt,
-    # replacing the _NoOpRuntime that was active since sitecustomize.py ran.
+    # It creates the RuntimeTracker and sets tracker.kernel_hooks._runtime = rt.
+    # patch_marimo_ast_compile() (module level, top of this file) is what
+    # actually activates tracing for every cell below.
     rt = init_marimo(
         history_name="RTFM event log exploration (Marimo)",
         branch_name="main",

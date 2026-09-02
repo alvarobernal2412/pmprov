@@ -42,6 +42,17 @@ from tracker.operation_registry import operation_type, step_category
 from tracker.runtime import RuntimeTracker
 from tracker.snapshot_policy import snapshot_policy, snapshot_policy_for_type
 from tracker.storage import DuckDBSQLiteBackend, StorageBackend
+from tracker.visualizations import (
+    build_display_graph,
+    build_plotly_graph,
+    compute_layout,
+    edge_label,
+    format_param_value,
+    format_params,
+    state_label,
+    step_nodes,
+    unwrap_param_value,
+)
 import tracker.visualizations  # noqa: F401 — patches show_graph / show_graph_widget onto RuntimeTracker
 import tracker.introspection  # noqa: F401 — patches describe_state / list_branches onto RuntimeTracker
 import tracker.comparison  # noqa: F401 — patches compare_states / compare_histories onto RuntimeTracker
@@ -78,4 +89,13 @@ __all__ = [
     "RuntimeTracker",
     "StorageBackend",
     "DuckDBSQLiteBackend",
+    "build_display_graph",
+    "build_plotly_graph",
+    "compute_layout",
+    "step_nodes",
+    "state_label",
+    "edge_label",
+    "format_params",
+    "format_param_value",
+    "unwrap_param_value",
 ]

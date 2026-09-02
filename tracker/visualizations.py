@@ -116,6 +116,264 @@ def _compute_layout(G) -> dict:
     return _tree_layout(G, "__ROOT__")
 
 
+# ---------------------------------------------------------------------------
+# Public graph-building/layout API
+# ---------------------------------------------------------------------------
+# `show_graph()`/`show_graph_widget()` need a live RuntimeTracker (for
+# `self.storage`/`self._history`), but the graph-building and layout logic
+# they call underneath only ever needs `StorageBackend.load_graph()`'s plain
+# dict output. Exposed here so a read-only consumer -- e.g. a second notebook
+# that only has storage access, no tracker session -- gets the exact same
+# tree layout `show_graph()` uses, instead of having to reimplement it.
+
+def step_nodes(graph_data: dict) -> list[dict]:
+    """States in `graph_data` that were produced by a tracked step (excludes the session root)."""
+    return _step_nodes(graph_data)
+
+
+def build_display_graph(graph_data: dict):
+    """Build the display graph (nodes = step outputs + a synthetic ROOT, edges labelled by func_name) from `StorageBackend.load_graph()` output. Returns (networkx.DiGraph, state_map)."""
+    return _build_display_graph(graph_data)
+
+
+def compute_layout(G) -> dict:
+    """Tree layout for `G` (graphviz's `dot` if available, else a subtree-width-centered fallback that keeps every node's x centered over its own children -- avoids the crossed edges a naive per-depth-layer layout produces)."""
+    return _compute_layout(G)
+
+
+def state_label(state: dict) -> str:
+    """Two-line node label: HH:MM:SS timestamp over the first 8 chars of the state id."""
+    return _state_label(state)
+
+
+def edge_label(func_name: str) -> str:
+    """Edge label: `func_name`, truncated to keep the rendered graph legible."""
+    return _edge_label(func_name)
+
+
+# ---------------------------------------------------------------------------
+# Parameter formatting
+# ---------------------------------------------------------------------------
+# A ParameterValue's payload lives under a different key depending on its
+# value_type (models/parameters.py): scalar/list/dict under "value", an
+# artifact reference under "artifact_state_id" (no "value" key at all), a
+# captured callable under "source_code"/"function_name". Dispatch on
+# value_type explicitly rather than assuming "value" is always there, or the
+# non-scalar cases render as their raw storage dict.
+
+def format_param_value(value: Any, max_items: int = 4, max_len: int = 60) -> str:
+    """Compact, human-readable rendering of one already-unwrapped parameter value."""
+    if isinstance(value, list):
+        shown = ", ".join(str(v) for v in value[:max_items])
+        more = f", …+{len(value) - max_items}" if len(value) > max_items else ""
+        return f"[{shown}{more}]"
+    text = str(value)
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
+def unwrap_param_value(raw: Any) -> Any:
+    """Pull the actual value out of a stored ParameterValue dict, per its value_type."""
+    if not isinstance(raw, dict):
+        return raw
+    value_type = raw.get("value_type")
+    if value_type == "artifact_state_ref":
+        return f"<artifact {raw.get('artifact_state_id', '?')[:8]}>"
+    if value_type == "lambda_function":
+        return raw.get("function_name") or raw.get("source_code", "<lambda>")
+    if "value" in raw:
+        return raw["value"]
+    return raw
+
+
+def format_params(params: list[dict], sep: str = "; ") -> str:
+    """Human-readable summary of a state-detail's `params` list (see `StorageBackend.load_state_detail`).
+
+    `__receiver__` (the bound-method target pmprov captures for replay, e.g.
+    a service instance) is plumbing, not an analysis parameter, so it's left
+    out of the summary.
+    """
+    parts = []
+    for pv in params:
+        suffix = pv["param_id"].split(":", 1)[-1]
+        if suffix == "__receiver__":
+            continue
+        value = unwrap_param_value(pv["value"])
+        parts.append(f"{suffix}={format_param_value(value)}")
+    return sep.join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Interactive (Plotly) graph
+# ---------------------------------------------------------------------------
+# `show_graph()` is a static matplotlib render. This builds the same tree
+# layout as an interactive Plotly figure: nodes are AnalysisStates (data
+# snapshots) colored by branch, edges are AnalysisSteps (operations) --
+# labelled with the operation name and, on hover, its full parameters.
+# Works identically in Jupyter and Marimo (unlike `show_graph_widget()`,
+# which is ipywidgets-based and Jupyter-only) since Plotly renders natively
+# in both.
+
+_BRANCH_PALETTE = [
+    "#f97316", "#3b82f6", "#22c55e", "#ef4444", "#a855f7",
+    "#14b8a6", "#eab308", "#ec4899",
+]
+
+
+def build_plotly_graph(storage: Any, history_id: str) -> Any:
+    """Build the interactive provenance-tree figure for `history_id`.
+
+    Storage-level (no live RuntimeTracker needed) so a read-only consumer --
+    e.g. a second notebook that only has `StorageBackend` access -- can build
+    the exact same figure `RuntimeTracker.show_graph_plotly()` renders.
+
+    Returns a `plotly.graph_objects.Figure`, or `None` if `plotly`/`networkx`
+    aren't installed or nothing has been recorded yet for `history_id`.
+    """
+    try:
+        import plotly.graph_objects as go  # noqa: F401
+    except ImportError:
+        print("build_plotly_graph() requires plotly. Install with: uv pip install plotly")
+        return None
+    try:
+        import networkx as nx  # noqa: F401
+    except ImportError:
+        print("build_plotly_graph() requires networkx. Install with: uv pip install -e '.[graph]'")
+        return None
+
+    graph_data = storage.load_graph(history_id)
+    if not _step_nodes(graph_data):
+        print("No provenance steps recorded yet.")
+        return None
+
+    G, state_map = _build_display_graph(graph_data)
+    pos = _compute_layout(G)
+
+    states = storage.load_states_rich(history_id)
+    branch_by_state = {s["state_id"]: s["branch_name"] for s in states}
+    detail_by_state = {
+        s["state_id"]: storage.load_state_detail(s["state_id"])
+        for s in states
+        if s["produced_by_step_id"]
+    }
+
+    artifact_by_state: dict = {}
+    if states:
+        con = storage._connect(read_only=True)
+        try:
+            rows = con.execute(
+                "SELECT ast.analysis_state_id, ast.mime_type, ast.size_bytes"
+                " FROM artifact_states ast JOIN analysis_states s"
+                " ON s.state_id = ast.analysis_state_id WHERE s.history_id = ?",
+                [history_id],
+            ).fetchall()
+        finally:
+            con.close()
+        for state_id, mime, size in rows:
+            artifact_by_state[state_id] = (mime, size)
+
+    branch_names = sorted(set(branch_by_state.values()))
+    color_by_branch = {
+        b: _BRANCH_PALETTE[i % len(_BRANCH_PALETTE)] for i, b in enumerate(branch_names)
+    }
+
+    # One line trace per edge (rather than one shared trace) so each segment
+    # carries its own hover text -- the step's operation, type and params.
+    # A separate midpoint-label trace makes the operation name visible on
+    # the graph itself, sharing the same hover text as its line.
+    edge_traces = []
+    label_x, label_y, label_text, label_hover = [], [], [], []
+    for u, v, edata in G.edges(data=True):
+        x0, y0 = pos[u]
+        x1, y1 = pos[v]
+        detail = detail_by_state.get(v)
+        func_name = edata.get("func_name", "")
+        if detail is None:
+            hover = func_name
+        else:
+            func_name = detail["func_name"]
+            hover = (
+                f"<b>{detail['func_name']}</b> ({detail['operation']['type']})<br>"
+                f"params: {format_params(detail['params'], sep='<br>&nbsp;&nbsp;') or '—'}<br>"
+                f"{detail['timestamp'][:19].replace('T', ' ')}"
+            )
+        edge_traces.append(
+            go.Scatter(
+                x=[x0, x1], y=[y0, y1], mode="lines",
+                line=dict(width=2, color="#94a3b8"),
+                hovertext=hover, hoverinfo="text",
+                hoverlabel=dict(bgcolor="#f1f5f9"),
+            )
+        )
+        label_x.append((x0 + x1) / 2)
+        label_y.append((y0 + y1) / 2)
+        label_text.append(func_name.rsplit(".", 1)[-1])
+        label_hover.append(hover)
+
+    label_trace = go.Scatter(
+        x=label_x, y=label_y, mode="markers+text",
+        text=label_text, textposition="middle center", textfont=dict(size=8, color="#334155"),
+        marker=dict(size=14, color="white", opacity=0.85, line=dict(width=0)),
+        hovertext=label_hover, hoverinfo="text",
+        hoverlabel=dict(bgcolor="#f1f5f9"),
+    )
+
+    node_x, node_y, node_text, node_hover, node_color = [], [], [], [], []
+    for node_id in G.nodes():
+        x, y = pos[node_id]
+        node_x.append(x)
+        node_y.append(y)
+        if node_id == "__ROOT__":
+            node_text.append("ROOT")
+            node_hover.append("Session root")
+            node_color.append("#94a3b8")
+            continue
+
+        node_text.append(_state_label(state_map.get(node_id, {})))
+        node_color.append(color_by_branch.get(branch_by_state.get(node_id), "#cccccc"))
+
+        artifact = artifact_by_state.get(node_id)
+        artifact_line = f"artifact: {artifact[0]}, {artifact[1]:,} bytes<br>" if artifact else ""
+        node_hover.append(
+            f"<b>state {node_id[:8]}</b><br>"
+            f"branch: {branch_by_state.get(node_id, '?')}<br>"
+            f"{artifact_line}"
+            f"{state_map.get(node_id, {}).get('timestamp', '')[:19].replace('T', ' ')}"
+        )
+
+    node_trace = go.Scatter(
+        x=node_x, y=node_y, mode="markers+text",
+        text=node_text, textposition="bottom center", textfont=dict(size=9),
+        hovertext=node_hover, hoverinfo="text",
+        marker=dict(size=26, color=node_color, line=dict(width=1, color="#1e293b")),
+    )
+
+    fig = go.Figure(data=[*edge_traces, label_trace, node_trace])
+    depth = max((abs(y) for _, y in pos.values()), default=0)
+    fig.update_layout(
+        title="Provenance tree (nodes = states, hover an edge for the step's parameters)",
+        showlegend=False,
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        # Capped rather than growing unbounded with tree depth -- scroll/drag
+        # to zoom and pan into a deep tree instead (see recommended `config`
+        # below); the modebar's reset-axes button snaps back to full view.
+        height=min(650, max(400, int(160 * (depth + 1)))),
+        margin=dict(l=20, r=20, t=50, b=20),
+        dragmode="pan",
+    )
+    return fig
+
+
+def _show_graph_plotly(self: "RuntimeTracker") -> Any:
+    """Interactive equivalent of `show_graph()` for the current session.
+
+    Pass the returned figure to `mo.ui.plotly(fig, config={"scrollZoom": True})`
+    in Marimo, or just return it as a cell's last expression in Jupyter.
+    """
+    self.storage._executor.submit(lambda: None).result()
+    return build_plotly_graph(self.storage, self._history.history_id)
+
+
 def _text_fallback(graph_data: dict) -> None:
     steps = graph_data["steps"]
     states = {s["state_id"]: s for s in graph_data["states"]}
@@ -569,6 +827,7 @@ from tracker.runtime import RuntimeTracker  # noqa: E402
 
 RuntimeTracker.show_graph = _show_graph
 RuntimeTracker.show_graph_widget = _show_graph_widget
+RuntimeTracker.show_graph_plotly = _show_graph_plotly
 RuntimeTracker._render_graph_image = _render_graph_image
 RuntimeTracker.list_states = _list_states
 RuntimeTracker.show_artifact_lifecycle = _show_artifact_lifecycle

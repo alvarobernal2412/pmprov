@@ -877,6 +877,47 @@ class DuckDBSQLiteBackend:
             })
         return results
 
+    def find_latest_history_by_name(self, name: str) -> Optional[str]:
+        """Most-recently-touched history_id with this exact name, or None.
+
+        "Touched" = MAX(analysis_states.timestamp) for that history, not the
+        history's own created_at -- so if two histories share a name (e.g.
+        because `fresh=True` was used at some point), this always returns
+        whichever one has actually been worked on more recently.
+        """
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute("""
+                SELECT h.history_id
+                FROM analysis_histories h
+                JOIN analysis_states s ON s.history_id = h.history_id
+                WHERE h.name = ?
+                GROUP BY h.history_id
+                ORDER BY MAX(s.timestamp) DESC
+                LIMIT 1
+            """, _p(name)).fetchone()
+        finally:
+            con.close()
+        return row[0] if row else None
+
+    def load_history(self, history_id: str) -> Optional[dict]:
+        """Return {history_id, name, active_state_id} for history_id, or None if unknown."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT history_id, name, active_state_id FROM analysis_histories WHERE history_id = ?",
+                _p(history_id),
+            ).fetchone()
+        finally:
+            con.close()
+        if row is None:
+            return None
+        return {
+            "history_id": row[0],
+            "name": row[1] or None,
+            "active_state_id": row[2] or None,
+        }
+
     def load_operations_by_category(self, history_id: str) -> list[dict]:
         """
         Return all steps for a history with their StepCategory names.

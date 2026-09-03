@@ -69,3 +69,30 @@ def test_load_history_active_state_id_is_none_before_any_step(storage):
     rt = RuntimeTracker(storage=storage, session_id="s1", history_name="empty")
     row = storage.load_history(rt._history.history_id)
     assert row["active_state_id"] is None
+
+
+def test_find_root_state_id_returns_none_when_history_unknown(storage):
+    assert storage.find_root_state_id("does-not-exist") is None
+
+
+def test_find_root_state_id_returns_the_root(storage):
+    rt = RuntimeTracker(storage=storage, session_id="s1", history_name="h")
+    root_id = rt._current_state_id  # nothing traced yet: pointer is still the root
+    rt.trace_step(func=lambda: pd.DataFrame({"a": [1]}), func_name="load",
+                  raw_line="load()", args=[], kwargs={})
+    settle(rt)
+
+    assert storage.find_root_state_id(rt._history.history_id) == root_id
+
+
+def test_load_state_branch_id_returns_none_when_state_unknown(storage):
+    assert storage.load_state_branch_id("does-not-exist") is None
+
+
+def test_load_state_branch_id_returns_branch(storage):
+    rt = RuntimeTracker(storage=storage, session_id="s1", history_name="h")
+    rt.trace_step(func=lambda: pd.DataFrame({"a": [1]}), func_name="load",
+                  raw_line="load()", args=[], kwargs={})
+    settle(rt)
+
+    assert storage.load_state_branch_id(rt._current_state_id) == rt._branch.branch_id

@@ -918,6 +918,32 @@ class DuckDBSQLiteBackend:
             "active_state_id": row[2] or None,
         }
 
+    def find_root_state_id(self, history_id: str) -> Optional[str]:
+        """The one state in history_id with no produced_by_step_id, or None."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute("""
+                SELECT state_id FROM analysis_states
+                WHERE history_id = ?
+                  AND (produced_by_step_id IS NULL OR produced_by_step_id = '')
+                LIMIT 1
+            """, _p(history_id)).fetchone()
+        finally:
+            con.close()
+        return row[0] if row else None
+
+    def load_state_branch_id(self, state_id: str) -> Optional[str]:
+        """The branch_id state_id belongs to, or None if state_id is unknown."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT branch_id FROM analysis_states WHERE state_id = ?",
+                _p(state_id),
+            ).fetchone()
+        finally:
+            con.close()
+        return row[0] if row else None
+
     def load_operations_by_category(self, history_id: str) -> list[dict]:
         """
         Return all steps for a history with their StepCategory names.

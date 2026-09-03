@@ -944,6 +944,34 @@ class DuckDBSQLiteBackend:
             con.close()
         return row[0] if row else None
 
+    def load_cell_executions(self, history_id: str) -> dict:
+        """Rebuild the {func_name: [execution, ...]} shape RuntimeTracker._cell_executions
+        uses for auto-branch divergence detection, from every step ever recorded
+        for history_id (across all its branches), oldest first.
+        """
+        con = self._connect(read_only=True)
+        try:
+            rows = con.execute("""
+                SELECT s.func_name, s.input_state_id, s.output_state_id,
+                       s.param_fingerprint, st.branch_id
+                FROM analysis_steps s
+                JOIN analysis_states st ON st.state_id = s.output_state_id
+                WHERE s.history_id = ?
+                ORDER BY s.timestamp
+            """, _p(history_id)).fetchall()
+        finally:
+            con.close()
+
+        executions: dict = {}
+        for func_name, input_state_id, output_state_id, param_fingerprint, branch_id in rows:
+            executions.setdefault(func_name, []).append({
+                "input_state_id": input_state_id,
+                "output_state_id": output_state_id,
+                "param_fingerprint": param_fingerprint,
+                "branch_id": branch_id,
+            })
+        return executions
+
     def load_operations_by_category(self, history_id: str) -> list[dict]:
         """
         Return all steps for a history with their StepCategory names.

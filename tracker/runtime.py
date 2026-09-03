@@ -235,6 +235,80 @@ class RuntimeTracker:
         self.storage._executor.submit(self.storage._write_agent, self._agent, self._history.history_id).result()
         self.storage._executor.submit(self.storage._write_env, self._env, self._history.history_id).result()
 
+    @classmethod
+    def resume(
+        cls,
+        storage: StorageBackend,
+        history_id: str,
+        session_id: str,
+        agent_id: Optional[str] = None,
+    ) -> "RuntimeTracker":
+        """
+        Continue a previously recorded AnalysisHistory instead of creating a
+        new one -- used when init_marimo()/init_jupyter() find a matching
+        history from an earlier session (see kernel_hooks.py).
+
+        Restores the current-state pointer (from the history's active_state_id,
+        falling back to its root state if nothing was ever traced), the branch
+        that state belongs to, and the per-function call history divergence
+        detection needs to keep working exactly as if the process had never
+        restarted. Agent/RuntimeEnvironment are captured fresh, same as a new
+        session -- only the analysis lineage itself is continued.
+        """
+        history_row = storage.load_history(history_id)
+        if history_row is None:
+            raise ValueError(f"no such history: {history_id!r}")
+
+        self = cls.__new__(cls)
+        self.storage = storage
+        self.session_id = session_id
+        self._env = _capture_env()
+        _username = _try_getuser()
+        self._agent = Agent(
+            agent_id=agent_id or _username,
+            agent_type=AgentType.HUMAN,
+            username=_username,
+        )
+
+        self._artifact_registry = {}
+        self._artifact_state_registry = {}
+        self._operation_cache = {}
+        self._abstraction_registry = {}
+        self._abstraction_cache = {}
+        self._replay_func_registry = {}
+
+        self._history = AnalysisHistory(
+            history_id=history_row["history_id"],
+            name=history_row["name"],
+            active_state_id=history_row["active_state_id"],
+        )
+
+        self._root_state_id = storage.find_root_state_id(history_id)
+        self._current_state_id = history_row["active_state_id"] or self._root_state_id
+
+        branch_id = storage.load_state_branch_id(self._current_state_id)
+        branch_row = next(
+            (b for b in storage.load_branches(history_id) if b["branch_id"] == branch_id),
+            None,
+        )
+        self._branch = AnalysisBranch(
+            branch_id=branch_row["branch_id"],
+            history_id=history_id,
+            name=branch_row["name"],
+            starts_at_state_id=branch_row["starts_at_state_id"],
+        )
+
+        self._cell_executions = storage.load_cell_executions(history_id)
+
+        self.storage._executor.submit(
+            self.storage._write_agent, self._agent, self._history.history_id
+        ).result()
+        self.storage._executor.submit(
+            self.storage._write_env, self._env, self._history.history_id
+        ).result()
+
+        return self
+
     # ------------------------------------------------------------------
     # Public API – invoked by AST-rewritten cells
     # ------------------------------------------------------------------

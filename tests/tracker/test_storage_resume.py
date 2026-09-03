@@ -149,3 +149,23 @@ def test_load_cell_executions_groups_by_func_name_in_order(storage):
 def test_load_cell_executions_returns_empty_dict_for_untouched_history(storage):
     rt = RuntimeTracker(storage=storage, session_id="s1", history_name="h")
     assert storage.load_cell_executions(rt._history.history_id) == {}
+
+
+def test_find_operation_by_name_returns_none_when_unrecorded(storage):
+    assert storage.find_operation_by_name("never_called") is None
+
+
+def test_find_operation_by_name_returns_recorded_operation(storage):
+    rt = RuntimeTracker(storage=storage, session_id="s1", history_name="h")
+    rt.trace_step(func=lambda: pd.DataFrame({"a": [1]}), func_name="load",
+                  raw_line="load()", args=[], kwargs={})
+    settle(rt)
+
+    found = storage.find_operation_by_name("load")
+    op, op_type, _ = rt._operation_cache["load"]
+    assert found == {
+        "operation_id": op.operation_id,
+        "operation_type_id": op_type.type_id,
+        "operation_type_name": op_type.name,
+        "step_category_id": op.step_category_id,
+    }

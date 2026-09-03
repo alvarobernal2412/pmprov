@@ -972,6 +972,33 @@ class DuckDBSQLiteBackend:
             })
         return executions
 
+    def find_operation_by_name(self, func_name: str) -> Optional[dict]:
+        """The existing global Operation for func_name, or None if never recorded.
+
+        Operations/OperationTypes have no history_id -- they're global reference
+        data (docs/claude/domain-model.md) -- so this is intentionally not scoped
+        to any one history.
+        """
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute("""
+                SELECT o.operation_id, o.operation_type_id, ot.name, o.step_category_id
+                FROM operations o
+                JOIN operation_types ot ON ot.type_id = o.operation_type_id
+                WHERE o.name = ?
+                LIMIT 1
+            """, _p(func_name)).fetchone()
+        finally:
+            con.close()
+        if row is None:
+            return None
+        return {
+            "operation_id": row[0],
+            "operation_type_id": row[1],
+            "operation_type_name": row[2],
+            "step_category_id": row[3],
+        }
+
     def load_operations_by_category(self, history_id: str) -> list[dict]:
         """
         Return all steps for a history with their StepCategory names.

@@ -96,3 +96,56 @@ def test_load_state_branch_id_returns_branch(storage):
     settle(rt)
 
     assert storage.load_state_branch_id(rt._current_state_id) == rt._branch.branch_id
+
+
+def test_load_cell_executions_groups_by_func_name_in_order(storage):
+    rt = RuntimeTracker(storage=storage, session_id="s1", history_name="h")
+    root = storage.find_root_state_id(rt._history.history_id)
+
+    # Two calls to the SAME func_name with IDENTICAL args: same param
+    # fingerprint, so no auto-branch fires (divergence detection only
+    # forks when the fingerprint differs) -- this keeps both calls on one
+    # branch, chained input->output, which is what "in order" is testing.
+    rt.trace_step(func=lambda: pd.DataFrame({"a": [1]}), func_name="load",
+                  raw_line="load()", args=[], kwargs={})
+    load1_output = rt._current_state_id
+    rt.trace_step(func=lambda: pd.DataFrame({"a": [1]}), func_name="load",
+                  raw_line="load()", args=[], kwargs={})
+    load2_output = rt._current_state_id
+
+    # A different func_name, to prove grouping is keyed by func_name.
+    rt.trace_step(func=lambda: pd.DataFrame({"b": [1]}), func_name="save",
+                  raw_line="save()", args=[], kwargs={})
+    save_output = rt._current_state_id
+    settle(rt)
+
+    executions = storage.load_cell_executions(rt._history.history_id)
+
+    assert list(executions.keys()) == ["load", "save"]
+    assert executions["load"] == [
+        {
+            "input_state_id": root,
+            "output_state_id": load1_output,
+            "param_fingerprint": executions["load"][0]["param_fingerprint"],
+            "branch_id": rt._branch.branch_id,
+        },
+        {
+            "input_state_id": load1_output,
+            "output_state_id": load2_output,
+            "param_fingerprint": executions["load"][1]["param_fingerprint"],
+            "branch_id": rt._branch.branch_id,
+        },
+    ]
+    assert executions["save"] == [
+        {
+            "input_state_id": load2_output,
+            "output_state_id": save_output,
+            "param_fingerprint": executions["save"][0]["param_fingerprint"],
+            "branch_id": rt._branch.branch_id,
+        },
+    ]
+
+
+def test_load_cell_executions_returns_empty_dict_for_untouched_history(storage):
+    rt = RuntimeTracker(storage=storage, session_id="s1", history_name="h")
+    assert storage.load_cell_executions(rt._history.history_id) == {}

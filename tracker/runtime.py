@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import getpass
 import hashlib
+import inspect
 import json
 import platform
 import sys
@@ -413,8 +414,18 @@ class RuntimeTracker:
 
         param_values: list[dict] = []
         try:
+            # Try to get parameter names from function signature
+            param_names: list[str] = []
+            try:
+                sig = inspect.signature(func)
+                param_names = list(sig.parameters.keys())
+            except (ValueError, TypeError):
+                # If inspection fails, fall back to positional names
+                param_names = [f"arg_{i}" for i in range(len(args))] + list(kwargs.keys())
+
             for i, a in enumerate(args):
-                pv = self._make_param_value(f"{func_name}:arg_{i}", step_id, a)
+                param_name = param_names[i] if i < len(param_names) else f"arg_{i}"
+                pv = self._make_param_value(f"{func_name}:{param_name}", step_id, a)
                 param_values.append(pv.model_dump(mode="json"))
             for k, v in kwargs.items():
                 pv = self._make_param_value(f"{func_name}:{k}", step_id, v)

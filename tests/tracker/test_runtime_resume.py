@@ -155,3 +155,25 @@ def test_last_call_params_decodes_most_recent_call(db_paths):
 
     params = rt.last_call_params("apply_folds")
     assert params == {"fold_specs": [{"name": "F", "activities": ["x"]}]}
+
+
+def test_last_call_params_excludes_artifact_ref_params(db_paths):
+    """Verify that params with artifact_state_ref value_type are excluded."""
+    db_path, artifact_dir = db_paths
+    rt = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="p")
+
+    def apply_folds(log, fold_specs):
+        return log
+
+    # Call with a DataFrame (becomes artifact_state_ref) and a config list
+    rt.trace_step(func=apply_folds, func_name="apply_folds",
+                   raw_line="apply_folds(log, fs)",
+                   args=[pd.DataFrame({"a": [1]}), [{"name": "F", "activities": ["x"]}]],
+                   kwargs={})
+    rt.storage._executor.submit(lambda: None).result()
+
+    params = rt.last_call_params("apply_folds")
+    # Only fold_specs (non-artifact) should be in the result
+    assert "log" not in params, "artifact-ref param 'log' should be excluded"
+    assert "fold_specs" in params, "non-artifact param 'fold_specs' should be included"
+    assert params == {"fold_specs": [{"name": "F", "activities": ["x"]}]}

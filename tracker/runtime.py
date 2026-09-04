@@ -323,8 +323,9 @@ class RuntimeTracker:
         Lets a resumed session recover what it was last configured with
         (e.g. a marimo notebook re-seeding its UI defaults on kernel
         restart) without needing to know pmprov's internal ParameterValue
-        shape. Artifact references are excluded from the result since they
-        are transient references, not configuration values.
+        shape. Params with value_type "artifact_state_ref" are excluded
+        from the result since artifact references are transient, not
+        configuration values.
         """
         raw = self.storage.load_last_step_params(
             self._history.history_id, self._branch.branch_id, func_name
@@ -337,11 +338,11 @@ class RuntimeTracker:
             name = pv["param_id"].split(":", 1)[-1]
             if name == "__receiver__":
                 continue
-            value = unwrap_param_value(pv["value"])
-            # Skip artifact references (e.g., "<artifact ...>") as they are
-            # transient and not meaningful for configuration recovery.
-            if isinstance(value, str) and value.startswith("<artifact"):
+            # Skip artifact-state-ref params as they are transient references,
+            # not configuration values. Check the raw value_type before unwrapping.
+            if pv.get("value_type") == "artifact_state_ref":
                 continue
+            value = unwrap_param_value(pv["value"])
             result[name] = value
         return result
 

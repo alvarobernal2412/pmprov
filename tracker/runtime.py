@@ -420,8 +420,8 @@ class RuntimeTracker:
                 sig = inspect.signature(func)
                 param_names = list(sig.parameters.keys())
             except (ValueError, TypeError):
-                # If inspection fails, fall back to positional names
-                param_names = [f"arg_{i}" for i in range(len(args))] + list(kwargs.keys())
+                # If inspection fails, fall back to positional names for args
+                param_names = [f"arg_{i}" for i in range(len(args))]
 
             for i, a in enumerate(args):
                 param_name = param_names[i] if i < len(param_names) else f"arg_{i}"

@@ -2,9 +2,17 @@ repos:
   - repo: local
     hooks:
       - id: run-tests
-        name: Run test suite
+        name: Run affected tests (pytest-testmon)
         language: system
-        entry: uv run pytest
+        # --testmon runs only the tests whose covered code changed since the
+        # last run (tracked via coverage.py in a local .testmondata file, not
+        # committed -- see .gitignore). The very first run after adopting
+        # this (no .testmondata yet) still runs the full suite once to build
+        # that baseline; every commit after that is scoped to what actually
+        # changed. CI (.github/workflows/ci.yml) always runs the full suite
+        # regardless, so this only trades local-hook speed for scope, not
+        # correctness -- nothing merges without the full suite passing there.
+        entry: uv run pytest --testmon
         pass_filenames: false
         stages: [pre-commit]
 

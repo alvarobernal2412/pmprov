@@ -213,7 +213,6 @@ def test_format_params_readable_on_realistic_step(db_paths):
 def test_dedup_holds_for_all_four_operations(db_paths):
     db_path, artifact_dir = db_paths
     rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
-    history_id = rt1._history.history_id
     _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
     settle(rt1)
 
@@ -356,7 +355,6 @@ def test_init_marimo_resume_surfaces_clean_error_not_typeerror(db_paths):
 def test_show_graph_plotly_readable_at_scale(db_paths):
     db_path, artifact_dir = db_paths
     rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
-    history_id = rt1._history.history_id
     _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
     settle(rt1)
 
@@ -438,4 +436,30 @@ def test_last_call_params_scoped_to_resumed_branch(db_paths):
     rt3 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     assert rt3._branch.branch_id == branch2
     folds_params = rt3.last_call_params("apply_folds")
+    assert folds_params["fold_specs"] == [{"name": "F1", "activities": ["review"]}]
+
+
+def test_last_call_params_survives_divergence_on_later_step(db_paths):
+    """Resuming and changing only generate_sankey_figure's params forks a new
+    branch starting at that step -- apply_folds's output state stays on the
+    parent branch. last_call_params("apply_folds") must still recover the
+    unchanged fold config via the ancestor lineage, not return None just
+    because the tracker is now on a different branch_id."""
+    db_path, artifact_dir = db_paths
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt1, fold_specs=[{"name": "F1", "activities": ["review"]}],
+                  activities=["submit", "F1", "approve"])
+    settle(rt1)
+    branch1 = rt1._branch.branch_id
+
+    rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    assert rt2._branch.branch_id == branch1
+    # Same fold_specs, different activities -- diverges only at generate_sankey_figure.
+    _run_pipeline(rt2, fold_specs=[{"name": "F1", "activities": ["review"]}],
+                  activities=["submit", "F1", "approve", "review"])
+    settle(rt2)
+    assert rt2._branch.branch_id != branch1
+
+    folds_params = rt2.last_call_params("apply_folds")
+    assert folds_params is not None
     assert folds_params["fold_specs"] == [{"name": "F1", "activities": ["review"]}]

@@ -328,10 +328,11 @@ class RuntimeTracker:
         configuration values.
         """
         raw = self.storage.load_last_step_params(
-            self._history.history_id, self._branch.branch_id, func_name
+            self._history.history_id, self._current_state_id, func_name
         )
         if raw is None:
             return None
+        # local import: tracker.visualizations imports RuntimeTracker at module scope
         from tracker.visualizations import unwrap_param_value
         result = {}
         for pv in raw:

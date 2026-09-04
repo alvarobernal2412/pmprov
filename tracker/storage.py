@@ -1000,48 +1000,68 @@ class DuckDBSQLiteBackend:
         }
 
     def load_last_step_params(
-        self, history_id: str, branch_id: str, func_name: str
+        self, history_id: str, state_id: str, func_name: str
     ) -> Optional[list[dict]]:
-        """Params of the most recent AnalysisStep for func_name on branch_id.
+        """Params of the nearest AnalysisStep for func_name in state_id's lineage.
+
+        Walks the ancestor chain of state_id (via produced_by_step_id /
+        input_state_id) back toward the root, looking for the most recent step
+        matching func_name. This is deliberately NOT scoped by branch_id:
+        `_detect_and_apply_branch` forks a new branch starting at the
+        diverging step, so every step before the divergence point keeps the
+        parent branch's id. Filtering by branch_id would miss those steps
+        even though they are part of this state's real lineage.
 
         Returns the same {"param_id", "value_type", "value"} row shape as
-        load_state_detail's params list, or None if func_name has never
-        been called on this branch (covers both "never called" and a
-        fresh history with no steps at all).
+        load_state_detail's params list, or None if func_name was never
+        called anywhere in state_id's ancestry.
         """
+        def _decode_params(rows: list) -> list[dict]:
+            result = []
+            for r in rows:
+                parsed = json.loads(r[2])
+                # Unwrap Scalar/List/Dict parameter values to their inner "value" field for callers
+                # (e.g. Task 2's `last_call_params`). ArtifactStateParameterValue and LambdaParameterValue
+                # have no top-level "value" key and pass through unchanged. This differs from load_state_detail,
+                # which returns the raw row shape; this method's purpose is to decode params for direct use.
+                actual_value = parsed.get("value", parsed) if isinstance(parsed, dict) and "value" in parsed else parsed
+                result.append({
+                    "param_id": r[0],
+                    "value_type": r[1],
+                    "value": actual_value
+                })
+            return result
+
         con = self._connect(read_only=True)
         try:
-            row = con.execute("""
-                SELECT s.step_id
-                FROM analysis_steps s
-                JOIN analysis_states st ON st.state_id = s.output_state_id
-                WHERE s.history_id = ? AND st.branch_id = ? AND s.func_name = ?
-                ORDER BY s.timestamp DESC
-                LIMIT 1
-            """, _p(history_id, branch_id, func_name)).fetchone()
-            if row is None:
-                return None
-            step_id = row[0]
-            pvs = con.execute(
-                "SELECT param_id, value_type, value_json FROM parameter_values WHERE step_id = ?",
-                _p(step_id),
-            ).fetchall()
+            current_id = state_id
+            seen: set[str] = set()
+            while current_id and current_id not in seen:
+                seen.add(current_id)
+                row = con.execute(
+                    "SELECT produced_by_step_id FROM analysis_states WHERE state_id = ?",
+                    _p(current_id),
+                ).fetchone()
+                if row is None or not row[0]:
+                    break  # reached root or unknown state
+                step_id = row[0]
+                step_row = con.execute(
+                    "SELECT func_name, input_state_id FROM analysis_steps WHERE step_id = ?",
+                    _p(step_id),
+                ).fetchone()
+                if step_row is None:
+                    break
+                step_func_name, input_state_id = step_row
+                if step_func_name == func_name:
+                    pvs = con.execute(
+                        "SELECT param_id, value_type, value_json FROM parameter_values WHERE step_id = ?",
+                        _p(step_id),
+                    ).fetchall()
+                    return _decode_params(pvs)
+                current_id = input_state_id or None
         finally:
             con.close()
-        result = []
-        for r in pvs:
-            parsed = json.loads(r[2])
-            # Unwrap Scalar/List/Dict parameter values to their inner "value" field for callers
-            # (e.g. Task 2's `last_call_params`). ArtifactStateParameterValue and LambdaParameterValue
-            # have no top-level "value" key and pass through unchanged. This differs from load_state_detail,
-            # which returns the raw row shape; this method's purpose is to decode params for direct use.
-            actual_value = parsed.get("value", parsed) if isinstance(parsed, dict) and "value" in parsed else parsed
-            result.append({
-                "param_id": r[0],
-                "value_type": r[1],
-                "value": actual_value
-            })
-        return result
+        return None
 
     def load_operations_by_category(self, history_id: str) -> list[dict]:
         """

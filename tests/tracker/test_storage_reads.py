@@ -94,7 +94,7 @@ def test_load_last_step_params_returns_none_when_never_called(db_paths):
     rt = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="p")
     storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
     result = storage.load_last_step_params(
-        rt._history.history_id, rt._branch.branch_id, "apply_folds"
+        rt._history.history_id, rt._current_state_id, "apply_folds"
     )
     assert result is None
 
@@ -117,7 +117,7 @@ def test_load_last_step_params_returns_most_recent_call(db_paths):
 
     storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
     params = storage.load_last_step_params(
-        rt._history.history_id, rt._branch.branch_id, "apply_folds"
+        rt._history.history_id, rt._current_state_id, "apply_folds"
     )
     assert params is not None
     by_name = {p["param_id"].split(":", 1)[-1]: p for p in params}
@@ -125,21 +125,46 @@ def test_load_last_step_params_returns_most_recent_call(db_paths):
 
 
 def test_load_last_step_params_scoped_to_branch(db_paths):
+    """apply_folds's output stays on branch 1 when a resumed session only
+    diverges on a later step (generate_sankey_figure), forking branch 2.
+    load_last_step_params must still find apply_folds's params by walking
+    branch 2's lineage back through the shared history -- it must NOT
+    return None just because apply_folds's output state's branch_id is
+    branch 1, not branch 2."""
     db_path, artifact_dir = db_paths
-    rt = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="p")
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="p")
 
     def apply_folds(log, fold_specs):
         return log
 
-    rt.trace_step(func=apply_folds, func_name="apply_folds",
-                   raw_line="apply_folds(log, [])",
-                   args=[pd.DataFrame({"a": [1]}), []], kwargs={})
-    settle(rt)
+    def generate_sankey_figure(service, activities):
+        return {"activities": sorted(activities)}
+
+    log = rt1.trace_step(func=apply_folds, func_name="apply_folds",
+                          raw_line="apply_folds(log, [])",
+                          args=[pd.DataFrame({"a": [1]}), []], kwargs={})
+    rt1.trace_step(func=generate_sankey_figure, func_name="generate_sankey_figure",
+                    raw_line="generate_sankey_figure(...)",
+                    args=[log, ["a"]], kwargs={})
+    settle(rt1)
+    branch1 = rt1._branch.branch_id
+
+    rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="p")
+    assert rt2._branch.branch_id == branch1
+    log2 = rt2.trace_step(func=apply_folds, func_name="apply_folds",
+                           raw_line="apply_folds(log, [])",
+                           args=[pd.DataFrame({"a": [1]}), []], kwargs={})
+    rt2.trace_step(func=generate_sankey_figure, func_name="generate_sankey_figure",
+                    raw_line="generate_sankey_figure(...)",
+                    args=[log2, ["b"]], kwargs={})
+    settle(rt2)
+    assert rt2._branch.branch_id != branch1
 
     storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
-    other_branch_id = "not-a-real-branch"
     params = storage.load_last_step_params(
-        rt._history.history_id, other_branch_id, "apply_folds"
+        rt2._history.history_id, rt2._current_state_id, "apply_folds"
     )
-    assert params is None
+    assert params is not None
+    by_name = {p["param_id"].split(":", 1)[-1]: p for p in params}
+    assert by_name["fold_specs"]["value"] == []
 

@@ -5,7 +5,7 @@ description = "Analytic provenance tracking middleware for exploratory process m
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "ipywidgets==8.1.8",
+    "ipywidgets==8.1.9",
     "marimo==0.23.16",
     "matplotlib==3.11.1",
     "pandas==3.0.5",
@@ -26,10 +26,10 @@ graph = [
 ]
 # Interactive provenance widget for show_graph_widget() in Jupyter
 widgets = [
-    "ipywidgets==8.1.8",
+    "ipywidgets==8.1.9",
 ]
 # Install everything at once: uv pip install -e ".[full]"
-full = ["duckdb==1.5.5", "pyarrow==25.0.1", "networkx==3.6.1", "matplotlib==3.11.1", "ipywidgets==8.1.8"]
+full = ["duckdb==1.5.5", "pyarrow==25.0.1", "networkx==3.6.1", "matplotlib==3.11.1", "ipywidgets==8.1.9"]
 
 [dependency-groups]
 dev = [

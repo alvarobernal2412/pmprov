@@ -35,6 +35,7 @@ pip-wheel-metadata/
 .coverage.*
 htmlcov/
 .tox/
+.testmondata*
 nosetests.xml
 coverage.xml
 *.cover

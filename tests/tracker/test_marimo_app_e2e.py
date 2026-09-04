@@ -208,3 +208,190 @@ def test_format_params_readable_on_realistic_step(db_paths):
 
     assert "__pmprov_state__" not in summary
     assert "fold_specs=" in summary
+
+
+def test_dedup_holds_for_all_four_operations(db_paths):
+    db_path, artifact_dir = db_paths
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    history_id = rt1._history.history_id
+    _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
+    settle(rt1)
+
+    rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt2, fold_specs=[{"name": "F1", "activities": ["review"]}],
+                  activities=["submit", "F1", "approve"])
+    settle(rt2)
+
+    rt3 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt3, fold_specs=[{"name": "F2", "activities": ["approve"]}],
+                  activities=["submit", "review", "F2"])
+    settle(rt3)
+
+    storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
+    con = storage._connect(read_only=True)
+    try:
+        for name in ("read_csv_stub", "create_service_stub", "apply_folds",
+                     "generate_sankey_figure"):
+            count = con.execute(
+                "SELECT COUNT(*) FROM operations WHERE name = ?", [name]
+            ).fetchone()[0]
+            assert count == 1, f"{name} should have exactly 1 Operation row, got {count}"
+    finally:
+        con.close()
+
+
+def test_four_restart_chain_threads_pointers_correctly(db_paths):
+    db_path, artifact_dir = db_paths
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    history_id = rt1._history.history_id
+    _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
+    settle(rt1)
+    branch1 = rt1._branch.branch_id
+
+    # restart 2: same params -> no new branch
+    rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt2, fold_specs=[], activities=["submit", "review", "approve"])
+    settle(rt2)
+    assert rt2._branch.branch_id == branch1
+
+    # restart 3: different params -> new branch
+    rt3 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    assert rt3._branch.branch_id == branch1
+    _run_pipeline(rt3, fold_specs=[{"name": "F1", "activities": ["review"]}],
+                  activities=["submit", "F1", "approve"])
+    settle(rt3)
+    branch3 = rt3._branch.branch_id
+    assert branch3 != branch1
+
+    # restart 4: same params as restart 3 -> stays on branch3, no new branch
+    rt4 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    assert rt4._branch.branch_id == branch3
+    _run_pipeline(rt4, fold_specs=[{"name": "F1", "activities": ["review"]}],
+                  activities=["submit", "F1", "approve"])
+    settle(rt4)
+    assert rt4._branch.branch_id == branch3
+
+    storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
+    assert len(storage.load_branches(history_id)) == 2
+
+
+def test_branch_off_a_branch_non_flat_tree(db_paths):
+    db_path, artifact_dir = db_paths
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    history_id = rt1._history.history_id
+    _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
+    settle(rt1)
+
+    rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt2, fold_specs=[{"name": "F1", "activities": ["review"]}],
+                  activities=["submit", "F1", "approve"])
+    settle(rt2)
+    branch2 = rt2._branch.branch_id
+
+    # Resume onto branch2 specifically, diverge again from there.
+    rt3 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    assert rt3._branch.branch_id == branch2
+    _run_pipeline(rt3, fold_specs=[{"name": "F1", "activities": ["review"]},
+                                    {"name": "F2", "activities": ["approve"]}],
+                  activities=["submit", "F1", "F2"])
+    settle(rt3)
+    branch3 = rt3._branch.branch_id
+    assert branch3 != branch2
+
+    storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
+    assert len(storage.load_branches(history_id)) == 3
+
+    fig = build_plotly_graph(storage, history_id)
+    assert fig is not None
+    assert len(fig.data) >= 2  # at least a node trace and an edge trace
+
+
+def test_artifacts_survive_resume(db_paths):
+    db_path, artifact_dir = db_paths
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
+    settle(rt1)
+
+    storage_before = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
+    con = storage_before._connect(read_only=True)
+    try:
+        artifact_count_before = con.execute(
+            "SELECT COUNT(*) FROM artifacts"
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert artifact_count_before > 0
+
+    rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    storage_after = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
+    con = storage_after._connect(read_only=True)
+    try:
+        artifact_count_after = con.execute(
+            "SELECT COUNT(*) FROM artifacts"
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert artifact_count_after == artifact_count_before
+
+
+def test_init_marimo_resume_surfaces_clean_error_not_typeerror(db_paths):
+    db_path, artifact_dir = db_paths
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    history_id = rt1._history.history_id
+    _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
+    settle(rt1)
+
+    storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
+    con = storage._connect()
+    try:
+        con.execute("DELETE FROM analysis_branches WHERE history_id = ?", [history_id])
+        con.commit()
+    finally:
+        con.close()
+
+    with pytest.raises(ValueError, match="no branch found"):
+        init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+
+
+def test_show_graph_plotly_readable_at_scale(db_paths):
+    db_path, artifact_dir = db_paths
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    history_id = rt1._history.history_id
+    _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
+    settle(rt1)
+
+    rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt2, fold_specs=[{"name": "F1", "activities": ["review"]}],
+                  activities=["submit", "F1", "approve"])
+    settle(rt2)
+    branch2 = rt2._branch.branch_id
+
+    rt3 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    assert rt3._branch.branch_id == branch2
+    _run_pipeline(rt3, fold_specs=[{"name": "F1", "activities": ["review"]},
+                                    {"name": "F2", "activities": ["approve"]}],
+                  activities=["submit", "F1", "F2"])
+    settle(rt3)
+
+    storage = StorageBackend(db_path=db_path, artifact_dir=artifact_dir)
+    fig = rt3.show_graph_plotly()
+    assert fig is not None
+
+    con = storage._connect(read_only=True)
+    try:
+        step_ids = [r[0] for r in con.execute(
+            "SELECT step_id FROM analysis_steps WHERE func_name = 'apply_folds'"
+        ).fetchall()]
+    finally:
+        con.close()
+    for step_id in step_ids:
+        con = storage._connect(read_only=True)
+        try:
+            state_id = con.execute(
+                "SELECT output_state_id FROM analysis_steps WHERE step_id = ?", [step_id]
+            ).fetchone()[0]
+        finally:
+            con.close()
+        detail = storage.load_state_detail(state_id)
+        summary = format_params(detail["params"])
+        assert "__pmprov_state__" not in summary

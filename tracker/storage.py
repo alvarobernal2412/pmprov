@@ -1031,7 +1031,10 @@ class DuckDBSQLiteBackend:
         result = []
         for r in pvs:
             parsed = json.loads(r[2])
-            # Extract the actual value from the nested structure
+            # Unwrap Scalar/List/Dict parameter values to their inner "value" field for callers
+            # (e.g. Task 2's `last_call_params`). ArtifactStateParameterValue and LambdaParameterValue
+            # have no top-level "value" key and pass through unchanged. This differs from load_state_detail,
+            # which returns the raw row shape; this method's purpose is to decode params for direct use.
             actual_value = parsed.get("value", parsed) if isinstance(parsed, dict) and "value" in parsed else parsed
             result.append({
                 "param_id": r[0],

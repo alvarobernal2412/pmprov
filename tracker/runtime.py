@@ -316,6 +316,35 @@ class RuntimeTracker:
 
         return self
 
+    def last_call_params(self, func_name: str) -> Optional[dict]:
+        """Decoded params of the most recent call to func_name on the
+        current branch, or None if func_name was never called here.
+
+        Lets a resumed session recover what it was last configured with
+        (e.g. a marimo notebook re-seeding its UI defaults on kernel
+        restart) without needing to know pmprov's internal ParameterValue
+        shape. Artifact references are excluded from the result since they
+        are transient references, not configuration values.
+        """
+        raw = self.storage.load_last_step_params(
+            self._history.history_id, self._branch.branch_id, func_name
+        )
+        if raw is None:
+            return None
+        from tracker.visualizations import unwrap_param_value
+        result = {}
+        for pv in raw:
+            name = pv["param_id"].split(":", 1)[-1]
+            if name == "__receiver__":
+                continue
+            value = unwrap_param_value(pv["value"])
+            # Skip artifact references (e.g., "<artifact ...>") as they are
+            # transient and not meaningful for configuration recovery.
+            if isinstance(value, str) and value.startswith("<artifact"):
+                continue
+            result[name] = value
+        return result
+
     # ------------------------------------------------------------------
     # Public API – invoked by AST-rewritten cells
     # ------------------------------------------------------------------

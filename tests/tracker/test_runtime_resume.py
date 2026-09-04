@@ -1,8 +1,14 @@
 # tests/tracker/test_runtime_resume.py
 import pandas as pd
 import pytest
+from tracker.kernel_hooks import init_marimo
 from tracker.storage import DuckDBSQLiteBackend as StorageBackend
 from tracker.runtime import RuntimeTracker
+
+
+@pytest.fixture
+def db_paths(tmp_path):
+    return tmp_path / "prov.db", tmp_path / "art"
 
 
 @pytest.fixture
@@ -126,3 +132,26 @@ def test_resume_raises_when_branch_for_current_state_is_missing(storage):
 
     with pytest.raises(ValueError, match="no branch found for state"):
         RuntimeTracker.resume(storage=storage, history_id=history_id, session_id="s2")
+
+
+def test_last_call_params_none_when_never_called(db_paths):
+    db_path, artifact_dir = db_paths
+    rt = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="p")
+    assert rt.last_call_params("apply_folds") is None
+
+
+def test_last_call_params_decodes_most_recent_call(db_paths):
+    db_path, artifact_dir = db_paths
+    rt = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="p")
+
+    def apply_folds(log, fold_specs):
+        return log
+
+    rt.trace_step(func=apply_folds, func_name="apply_folds",
+                   raw_line="apply_folds(log, fs)",
+                   args=[pd.DataFrame({"a": [1]}), [{"name": "F", "activities": ["x"]}]],
+                   kwargs={})
+    rt.storage._executor.submit(lambda: None).result()
+
+    params = rt.last_call_params("apply_folds")
+    assert params == {"fold_specs": [{"name": "F", "activities": ["x"]}]}

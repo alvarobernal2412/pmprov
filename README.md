@@ -48,6 +48,8 @@ event_log = pd.read_csv("data/log.csv", parse_dates=["time:timestamp"])
 net, im, fm = pm4py.discover_petri_net_inductive(event_log)
 ```
 
+**Resuming a history:** calling `init_jupyter`/`init_marimo` again with the same `history_name` (and the same `db_path`) resumes the prior history by default — your kernel restarted, but the analysis lineage picks up where it left off. Pass `fresh=True` to force a brand-new history instead. Calling with no `history_name` always starts fresh, unaffected by this. Note this isn't safe across two kernels running concurrently against the same `db_path` + `history_name` — they'd race on whose writes "win".
+
 **In a Marimo notebook:**
 
 Marimo support requires a one-time setup step. The middleware patches Marimo's AST compiler at Python startup via `sitecustomize.py`, which must be placed in your virtual environment (already in place if installed via `uv`).

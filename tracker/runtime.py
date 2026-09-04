@@ -285,12 +285,18 @@ class RuntimeTracker:
 
         self._root_state_id = storage.find_root_state_id(history_id)
         self._current_state_id = history_row["active_state_id"] or self._root_state_id
+        if self._current_state_id is None:
+            raise ValueError(f"history has no states, cannot resume: {history_id!r}")
 
         branch_id = storage.load_state_branch_id(self._current_state_id)
         branch_row = next(
             (b for b in storage.load_branches(history_id) if b["branch_id"] == branch_id),
             None,
         )
+        if branch_row is None:
+            raise ValueError(
+                f"no branch found for state {self._current_state_id!r} in history {history_id!r}"
+            )
         self._branch = AnalysisBranch(
             branch_id=branch_row["branch_id"],
             history_id=history_id,

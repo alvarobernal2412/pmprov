@@ -395,3 +395,47 @@ def test_show_graph_plotly_readable_at_scale(db_paths):
         detail = storage.load_state_detail(state_id)
         summary = format_params(detail["params"])
         assert "__pmprov_state__" not in summary
+
+
+def test_last_call_params_none_on_fresh_history(db_paths):
+    db_path, artifact_dir = db_paths
+    rt = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    assert rt.last_call_params("apply_folds") is None
+    assert rt.last_call_params("generate_sankey_figure") is None
+
+
+def test_last_call_params_reflects_prior_session_after_resume(db_paths):
+    db_path, artifact_dir = db_paths
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt1, fold_specs=[{"name": "F1", "activities": ["review"]}],
+                  activities=["submit", "F1", "approve"], builder="sequence_based",
+                  allow_loops=False, show_empty=False)
+    settle(rt1)
+
+    rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    folds_params = rt2.last_call_params("apply_folds")
+    sankey_params = rt2.last_call_params("generate_sankey_figure")
+
+    assert folds_params["fold_specs"] == [{"name": "F1", "activities": ["review"]}]
+    assert sorted(sankey_params["activities"]) == ["F1", "approve", "submit"]
+    assert sankey_params["builder"] == "sequence_based"
+    assert sankey_params["allow_loops"] is False
+    assert sankey_params["show_empty"] is False
+
+
+def test_last_call_params_scoped_to_resumed_branch(db_paths):
+    db_path, artifact_dir = db_paths
+    rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
+    settle(rt1)
+
+    rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    _run_pipeline(rt2, fold_specs=[{"name": "F1", "activities": ["review"]}],
+                  activities=["submit", "F1", "approve"])
+    settle(rt2)
+    branch2 = rt2._branch.branch_id
+
+    rt3 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    assert rt3._branch.branch_id == branch2
+    folds_params = rt3.last_call_params("apply_folds")
+    assert folds_params["fold_specs"] == [{"name": "F1", "activities": ["review"]}]

@@ -642,18 +642,37 @@ class RuntimeTracker:
 
     def _get_or_create_operation(
         self, func_name: str
-    ) -> tuple[Operation, OperationType]:
+    ) -> tuple[Operation, OperationType, Optional[StepCategory]]:
         """
         Return the (Operation, OperationType) pair for *func_name*, creating
         it on first encounter and caching it for the rest of the session.
 
         Operation represents the *definition* of what was called; OperationType
         is the semantic category resolved via the operation_registry (defaults
-        to ``"unknown"`` when not registered).
+        to ``"unknown"`` when not registered). Operations are global reference
+        data (no history_id), so before minting a new one this also checks
+        storage for a row another session already created for the same
+        func_name -- otherwise every session would mint its own duplicate
+        Operation row for the same function.
         """
         if func_name in self._operation_cache:
             op, ot, _ = self._operation_cache[func_name]
             return op, ot, None  # step_cat already written on first encounter
+
+        existing = self.storage.find_operation_by_name(func_name)
+        if existing is not None:
+            operation = Operation(
+                operation_id=existing["operation_id"],
+                name=func_name,
+                operation_type_id=existing["operation_type_id"],
+                step_category_id=existing["step_category_id"],
+            )
+            op_type = OperationType(
+                type_id=existing["operation_type_id"],
+                name=existing["operation_type_name"],
+            )
+            self._operation_cache[func_name] = (operation, op_type, None)
+            return operation, op_type, None
 
         type_name = _lookup_operation_type(func_name)
         op_type = OperationType(type_id=_uid(), name=type_name)

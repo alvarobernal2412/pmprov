@@ -81,7 +81,13 @@ def test_connect_lock_is_released_when_connect_itself_raises(tmp_path, monkeypat
 
     storage = StorageBackend(db_path=tmp_path / "prov.db", artifact_dir=tmp_path / "art")
 
-    real_connect = storage_module._duckdb.connect
+    # Access the appropriate connection module based on what backend is being used
+    if storage_module._BACKEND == "duckdb":
+        import duckdb as _duckdb
+    else:
+        import sqlite3 as _duckdb
+
+    real_connect = _duckdb.connect
     should_fail = {"value": True}
 
     def _flaky_connect(*args, **kwargs):
@@ -90,7 +96,7 @@ def test_connect_lock_is_released_when_connect_itself_raises(tmp_path, monkeypat
             raise RuntimeError("simulated connect failure")
         return real_connect(*args, **kwargs)
 
-    monkeypatch.setattr(storage_module._duckdb, "connect", _flaky_connect)
+    monkeypatch.setattr(_duckdb, "connect", _flaky_connect)
 
     with pytest.raises(RuntimeError, match="simulated connect failure"):
         storage._connect()

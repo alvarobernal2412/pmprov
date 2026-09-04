@@ -999,6 +999,47 @@ class DuckDBSQLiteBackend:
             "step_category_id": row[3],
         }
 
+    def load_last_step_params(
+        self, history_id: str, branch_id: str, func_name: str
+    ) -> Optional[list[dict]]:
+        """Params of the most recent AnalysisStep for func_name on branch_id.
+
+        Returns the same {"param_id", "value_type", "value"} row shape as
+        load_state_detail's params list, or None if func_name has never
+        been called on this branch (covers both "never called" and a
+        fresh history with no steps at all).
+        """
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute("""
+                SELECT s.step_id
+                FROM analysis_steps s
+                JOIN analysis_states st ON st.state_id = s.output_state_id
+                WHERE s.history_id = ? AND st.branch_id = ? AND s.func_name = ?
+                ORDER BY s.timestamp DESC
+                LIMIT 1
+            """, _p(history_id, branch_id, func_name)).fetchone()
+            if row is None:
+                return None
+            step_id = row[0]
+            pvs = con.execute(
+                "SELECT param_id, value_type, value_json FROM parameter_values WHERE step_id = ?",
+                _p(step_id),
+            ).fetchall()
+        finally:
+            con.close()
+        result = []
+        for r in pvs:
+            parsed = json.loads(r[2])
+            # Extract the actual value from the nested structure
+            actual_value = parsed.get("value", parsed) if isinstance(parsed, dict) and "value" in parsed else parsed
+            result.append({
+                "param_id": r[0],
+                "value_type": r[1],
+                "value": actual_value
+            })
+        return result
+
     def load_operations_by_category(self, history_id: str) -> list[dict]:
         """
         Return all steps for a history with their StepCategory names.

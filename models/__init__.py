@@ -13,10 +13,18 @@ operations  – OperationType, StepCategory, Operation, Version
 analysis    – AnalysisStep, AnalysisState, StateAbstraction
 history     – AnalysisBranch, AnalysisHistory
 pipelines   – PipelineFragment, Pipeline
+annotations – AnnotatableType, Annotation, AnnotationTarget, Tag, TagAssignment
 """
 
 from .agents import Agent, AgentType, RuntimeEnvironment
 from .analysis import AnalysisState, AnalysisStep, StateAbstraction
+from .annotations import (
+    AnnotatableType,
+    Annotation,
+    AnnotationTarget,
+    Tag,
+    TagAssignment,
+)
 from .artifacts import (
     Artifact,
     ArtifactState,
@@ -75,4 +83,10 @@ __all__ = [
     # pipelines
     "PipelineFragment",
     "Pipeline",
+    # annotations
+    "AnnotatableType",
+    "Annotation",
+    "AnnotationTarget",
+    "Tag",
+    "TagAssignment",
 ]

@@ -116,6 +116,10 @@ CREATE TABLE IF NOT EXISTS pipelines (pipeline_id VARCHAR PRIMARY KEY, history_i
 CREATE TABLE IF NOT EXISTS pipeline_fragments (fragment_id VARCHAR PRIMARY KEY, pipeline_id VARCHAR NOT NULL, step_ids VARCHAR NOT NULL, position INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS step_categories (category_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS pruned_views (view_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, name VARCHAR NOT NULL, created_at VARCHAR NOT NULL, config_json VARCHAR NOT NULL);
+CREATE TABLE IF NOT EXISTS annotations (annotation_id VARCHAR PRIMARY KEY, text VARCHAR NOT NULL, agent_id VARCHAR NOT NULL, created_at VARCHAR NOT NULL);
+CREATE TABLE IF NOT EXISTS annotation_targets (annotation_id VARCHAR NOT NULL, target_type VARCHAR NOT NULL, target_id VARCHAR NOT NULL);
+CREATE TABLE IF NOT EXISTS tags (tag_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL);
+CREATE TABLE IF NOT EXISTS tag_assignments (assignment_id VARCHAR PRIMARY KEY, tag_id VARCHAR NOT NULL, target_type VARCHAR NOT NULL, target_id VARCHAR NOT NULL, created_at VARCHAR NOT NULL);
 """
 
 
@@ -232,6 +236,21 @@ class DuckDBSQLiteBackend:
 
     def save_pruned_view_sync(self, view_id: str, history_id: str, name: str, config: dict) -> None:
         self._executor.submit(self._write_pruned_view, view_id, history_id, name, config).result()
+
+    def save_annotation_sync(self, annotation: Any, targets: list) -> None:
+        self._executor.submit(self._write_annotation, annotation, targets).result()
+
+    def save_tag_sync(self, name: str) -> str:
+        return self._executor.submit(self._write_tag, name).result()
+
+    def save_tag_assignment_sync(self, assignment: Any) -> None:
+        self._executor.submit(self._write_tag_assignment, assignment).result()
+
+    def remove_annotation_sync(self, annotation_id: str) -> None:
+        self._executor.submit(self._delete_annotation, annotation_id).result()
+
+    def remove_tag_assignment_sync(self, assignment_id: str) -> None:
+        self._executor.submit(self._delete_tag_assignment, assignment_id).result()
 
     def materialize_curated_history(self, step_ids: list[str], name: str) -> str:
         """
@@ -1174,6 +1193,66 @@ class DuckDBSQLiteBackend:
             "config": json.loads(config_json),
         }
 
+    def load_annotations(self, target_type: str, target_id: str) -> list[dict]:
+        """
+        Return every annotation attached to (target_type, target_id), each including
+        the full set of co-targets it was created with (not just this one).
+        """
+        con = self._connect(read_only=True)
+        try:
+            annotation_ids = [
+                r[0] for r in con.execute(
+                    "SELECT annotation_id FROM annotation_targets WHERE target_type = ? AND target_id = ?",
+                    _p(target_type, target_id),
+                ).fetchall()
+            ]
+            results = []
+            for annotation_id in annotation_ids:
+                row = con.execute(
+                    "SELECT text, agent_id, created_at FROM annotations WHERE annotation_id = ?",
+                    _p(annotation_id),
+                ).fetchone()
+                if row is None:
+                    continue
+                text, agent_id, created_at = row
+                targets = [
+                    {"target_type": t[0], "target_id": t[1]}
+                    for t in con.execute(
+                        "SELECT target_type, target_id FROM annotation_targets WHERE annotation_id = ?",
+                        _p(annotation_id),
+                    ).fetchall()
+                ]
+                results.append({
+                    "annotation_id": annotation_id,
+                    "text": text,
+                    "agent_id": agent_id,
+                    "created_at": created_at,
+                    "targets": targets,
+                })
+            return results
+        finally:
+            con.close()
+
+    def load_tags(self, target_type: str, target_id: str) -> list[dict]:
+        """Return every tag assigned to (target_type, target_id)."""
+        con = self._connect(read_only=True)
+        try:
+            rows = con.execute(
+                """
+                SELECT ta.assignment_id, t.tag_id, t.name, ta.created_at
+                FROM tag_assignments ta
+                JOIN tags t ON t.tag_id = ta.tag_id
+                WHERE ta.target_type = ? AND ta.target_id = ?
+                """,
+                _p(target_type, target_id),
+            ).fetchall()
+            return [
+                {"assignment_id": r[0], "tag_id": r[1], "name": r[2], "created_at": r[3]}
+                for r in rows
+            ]
+        finally:
+            con.close()
+
     def load_pipeline_steps(self, pipeline_id: str) -> list[dict]:
         """Return step records for a pipeline in fragment order."""
         con = self._connect(read_only=True)
@@ -1405,6 +1484,81 @@ class DuckDBSQLiteBackend:
             _commit(con)
         except Exception as e:
             log_storage_error(e, component="save_pruned_view_sync", view_id=view_id)
+            raise
+        finally:
+            con.close()
+
+    def _write_annotation(self, annotation, targets) -> None:
+        con = self._connect()
+        try:
+            con.execute(
+                "INSERT INTO annotations VALUES (?,?,?,?)",
+                _p(annotation.annotation_id, annotation.text, annotation.agent_id,
+                   annotation.created_at.isoformat()),
+            )
+            for target in targets:
+                con.execute(
+                    "INSERT INTO annotation_targets VALUES (?,?,?)",
+                    _p(annotation.annotation_id, target.target_type.value, target.target_id),
+                )
+            _commit(con)
+        except Exception as e:
+            log_storage_error(e, component="_write_annotation", annotation_id=annotation.annotation_id)
+            raise
+        finally:
+            con.close()
+
+    def _write_tag(self, name: str) -> str:
+        """Return the existing tag_id for *name*, or create and return a new one."""
+        con = self._connect()
+        try:
+            row = con.execute("SELECT tag_id FROM tags WHERE name = ?", _p(name)).fetchone()
+            if row:
+                return row[0]
+            tag_id = str(uuid.uuid4())
+            con.execute("INSERT INTO tags VALUES (?,?)", _p(tag_id, name))
+            _commit(con)
+            return tag_id
+        except Exception as e:
+            log_storage_error(e, component="_write_tag", name=name)
+            raise
+        finally:
+            con.close()
+
+    def _write_tag_assignment(self, assignment) -> None:
+        con = self._connect()
+        try:
+            con.execute(
+                "INSERT INTO tag_assignments VALUES (?,?,?,?,?)",
+                _p(assignment.assignment_id, assignment.tag_id, assignment.target_type.value,
+                   assignment.target_id, assignment.created_at.isoformat()),
+            )
+            _commit(con)
+        except Exception as e:
+            log_storage_error(e, component="_write_tag_assignment", assignment_id=assignment.assignment_id)
+            raise
+        finally:
+            con.close()
+
+    def _delete_annotation(self, annotation_id: str) -> None:
+        con = self._connect()
+        try:
+            con.execute("DELETE FROM annotation_targets WHERE annotation_id = ?", _p(annotation_id))
+            con.execute("DELETE FROM annotations WHERE annotation_id = ?", _p(annotation_id))
+            _commit(con)
+        except Exception as e:
+            log_storage_error(e, component="_delete_annotation", annotation_id=annotation_id)
+            raise
+        finally:
+            con.close()
+
+    def _delete_tag_assignment(self, assignment_id: str) -> None:
+        con = self._connect()
+        try:
+            con.execute("DELETE FROM tag_assignments WHERE assignment_id = ?", _p(assignment_id))
+            _commit(con)
+        except Exception as e:
+            log_storage_error(e, component="_delete_tag_assignment", assignment_id=assignment_id)
             raise
         finally:
             con.close()

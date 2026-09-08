@@ -35,6 +35,7 @@ OperationType cannot be inferred automatically.  Register labels explicitly::
 Unregistered functions default to OperationType ``"unknown"``.
 """
 
+from models.annotations import AnnotatableType
 from tracker.ast_rewriter import OMIT_FUNCTIONS
 from tracker.kernel_hooks import init_jupyter, init_marimo, patch_marimo_ast_compile, _NoOpRuntime
 from tracker.logger import get_logger, enable_logging
@@ -57,6 +58,7 @@ import tracker.visualizations  # noqa: F401 — patches show_graph / show_graph_
 import tracker.introspection  # noqa: F401 — patches describe_state / list_branches onto RuntimeTracker
 import tracker.comparison  # noqa: F401 — patches compare_states / compare_histories onto RuntimeTracker
 import tracker.pruning  # noqa: F401 — patches build_pruned_view / save_pruned_view / load_pruned_view onto RuntimeTracker
+import tracker.annotations  # noqa: F401 — patches annotate / tag / list_annotations / list_tags onto RuntimeTracker
 
 
 def omit_functions(*names: str) -> None:
@@ -98,4 +100,5 @@ __all__ = [
     "format_params",
     "format_param_value",
     "unwrap_param_value",
+    "AnnotatableType",
 ]

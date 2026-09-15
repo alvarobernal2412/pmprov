@@ -188,16 +188,19 @@ def test_replay_path_unaffected_by_pruned_view_hiding_its_branch(rt, event_log):
     trunk_state = rt._current_state_id
     settle(rt)
 
-    branch = rt.checkout(trunk_state, branch_name="experiment")
+    rt.checkout(trunk_state, branch_name="experiment")
     rt.trace_step(func=lambda df: df.assign(y=2), func_name="branch_step",
                   raw_line="df=branch_step(df)", args=[event_log.assign(x=1)], kwargs={})
+    # The branch only materializes once this diverging step runs — read its
+    # id from rt._branch now, not from checkout()'s return value.
+    branch_id = rt._branch.branch_id
     branch_target = rt._current_state_id
     settle(rt)
 
     # Baseline, computed before the branch is ever hidden from anything.
     baseline_step_ids = rt.find_shortest_replay_path(branch_target)
 
-    view = rt.build_pruned_view(hidden_branch_ids=[branch.branch_id])
+    view = rt.build_pruned_view(hidden_branch_ids=[branch_id])
     hidden_ids = {n["state_id"] for n in view["nodes"]}
     assert branch_target not in hidden_ids  # confirm it really is hidden from the view
 

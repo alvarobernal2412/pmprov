@@ -10,11 +10,22 @@ An AnalysisStep is the operation an analyst performed — not only a
 DataFrame-transforming function call, but equally "changed the chart's mark
 to bar" or "moved the threshold slider to 5". trace_ui_step() therefore
 builds a real AnalysisStep + AnalysisState pair, through the same
-operation-registry / branch-divergence / parameter-value machinery
-trace_step() uses for function calls (_get_or_create_operation,
-_detect_and_apply_branch, _make_param_value, _cell_executions) — a widget
-interaction that recurs with different values on the same branch triggers
-the exact same auto-branching a re-run with different arguments would.
+operation-registry / parameter-value machinery trace_step() uses for
+function calls (_get_or_create_operation, _make_param_value,
+_cell_executions).
+
+Branching (this branch = manual-only model): a UI interaction is resolved
+through the exact same _resolve_input_state() every regular trace_step()
+call goes through. In practice this means flipping through several widget
+values in the ordinary course of exploring a chart never forks anything —
+it just appends, one UI step after another, same as any other repeated
+call with no checkout in between. A branch only appears if the analyst
+explicitly checks out to an earlier state and then interacts with a widget
+differently than whatever already happened from there — see
+_resolve_input_state()'s docstring for the exact replay/divergence rule.
+(Contrast the `feat/ui-interactions` branch, where every differing
+interaction auto-forks — which is the DAG-noise problem manual-only
+branching exists to avoid in the first place.)
 
 What's deliberately different from trace_step():
   - No pre/post snapshot or delta computation: there is no "before/after
@@ -24,15 +35,6 @@ What's deliberately different from trace_step():
     storage.py's "ui_state_alias" kind — never a re-persisted Parquet copy.
     A chatty widget (a dragged slider) must not write megabytes of duplicate
     data per interaction.
-
-Granularity control: RuntimeTracker.capture_ui_interactions (set via
-init_marimo(capture_ui_interactions=...)) gates this at the source — when
-False, trace_ui_step() is a no-op that returns the current state unchanged.
-This exists because every interaction becoming a real Step/State node is
-exactly the kind of DAG noise that can swamp a small number of genuine data
-steps in show_graph()/list_states() once a widget fires often (dragging,
-typing) — the flag lets an analyst trade that granularity off against a
-cleaner pipeline view, without needing a different capture mechanism.
 """
 from __future__ import annotations
 
@@ -79,15 +81,8 @@ def _trace_ui_step(
 
     Returns
     -------
-    The new output_state_id (equal to the prior current_state_id if
-    capture_ui_interactions is False).
+    The new output_state_id.
     """
-    # NOTE: no capture_ui_interactions attribute/flag exists yet — see the
-    # open design question in the conversation before adding one. Defaulting
-    # true via getattr keeps this method safe to call either way meanwhile.
-    if not getattr(self, "capture_ui_interactions", True):
-        return self._current_state_id
-
     func_name = f"ui:{widget_type}:{widget_label}" if widget_label else f"ui:{widget_type}"
 
     try:
@@ -97,9 +92,9 @@ def _trace_ui_step(
                           step="fingerprint", func_name=func_name, error=e)
         fp = str(uuid.uuid4())
     try:
-        input_state_id = self._detect_and_apply_branch(func_name, fp)
+        input_state_id = self._resolve_input_state(func_name, fp)
     except Exception as e:
-        log_trace_warning("UI interaction branch detection failed, staying on current branch",
+        log_trace_warning("post-checkout branch resolution failed, staying on current branch",
                           step="branch_detection", func_name=func_name, error=e)
         input_state_id = self._current_state_id
 

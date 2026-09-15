@@ -125,12 +125,16 @@ def test_load_last_step_params_returns_most_recent_call(db_paths):
 
 
 def test_load_last_step_params_scoped_to_branch(db_paths):
-    """apply_folds's output stays on branch 1 when a resumed session only
-    diverges on a later step (generate_sankey_figure), forking branch 2.
-    load_last_step_params must still find apply_folds's params by walking
-    branch 2's lineage back through the shared history -- it must NOT
-    return None just because apply_folds's output state's branch_id is
-    branch 1, not branch 2."""
+    """apply_folds's output stays on branch 1 when a resumed session
+    manually checks out to right after it and diverges on a later step
+    (generate_sankey_figure), forking branch 2. load_last_step_params must
+    still find apply_folds's params by walking branch 2's lineage back
+    through the shared history -- it must NOT return None just because
+    apply_folds's output state's branch_id is branch 1, not branch 2.
+
+    Branching is manual-only: the divergence below is deliberate (an
+    explicit checkout), not an automatic side effect of passing different
+    arguments to generate_sankey_figure."""
     db_path, artifact_dir = db_paths
     rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="p")
 
@@ -143,6 +147,7 @@ def test_load_last_step_params_scoped_to_branch(db_paths):
     log = rt1.trace_step(func=apply_folds, func_name="apply_folds",
                           raw_line="apply_folds(log, [])",
                           args=[pd.DataFrame({"a": [1]}), []], kwargs={})
+    after_apply_folds_state = rt1._current_state_id
     rt1.trace_step(func=generate_sankey_figure, func_name="generate_sankey_figure",
                     raw_line="generate_sankey_figure(...)",
                     args=[log, ["a"]], kwargs={})
@@ -151,9 +156,8 @@ def test_load_last_step_params_scoped_to_branch(db_paths):
 
     rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="p")
     assert rt2._branch.branch_id == branch1
-    log2 = rt2.trace_step(func=apply_folds, func_name="apply_folds",
-                           raw_line="apply_folds(log, [])",
-                           args=[pd.DataFrame({"a": [1]}), []], kwargs={})
+    rt2.checkout(after_apply_folds_state, branch_name="branch2")
+    log2 = pd.DataFrame({"a": [1]})
     rt2.trace_step(func=generate_sankey_figure, func_name="generate_sankey_figure",
                     raw_line="generate_sankey_figure(...)",
                     args=[log2, ["b"]], kwargs={})

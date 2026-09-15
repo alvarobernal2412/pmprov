@@ -58,11 +58,15 @@ def test_list_branches_returns_dataframe(rt, event_log):
 
 
 def test_list_branches_shows_new_branch(rt, event_log):
+    """Branching is manual-only and lazy: checkout() alone creates nothing —
+    the branch only materializes once a step actually runs from that point."""
     rt.trace_step(func=lambda df: df.assign(x=1), func_name="f",
                   raw_line="df=f(df)", args=[event_log], kwargs={})
     fork = rt._current_state_id
     settle(rt)
     rt.checkout(fork, branch_name="alt")
+    rt.trace_step(func=lambda df: df.assign(y=2), func_name="g",
+                  raw_line="df=g(df)", args=[event_log], kwargs={})
     settle(rt)
 
     df = rt.list_branches()

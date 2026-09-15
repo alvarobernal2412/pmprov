@@ -51,11 +51,15 @@ def test_resume_restores_the_branch_the_current_state_belongs_to(storage):
     original = RuntimeTracker(storage=storage, session_id="s1", history_name="h")
     original.trace_step(func=lambda: pd.DataFrame({"a": [1]}), func_name="load",
                          raw_line="load()", args=[], kwargs={})
-    # Force a second branch by re-running "load" with different args on purpose.
+    trunk_state = original._current_state_id
+    settle(original)  # checkout() reads the state's branch back from storage
+    # Branching is manual-only: an explicit checkout + a diverging step is
+    # what creates a second branch here, not merely different arguments.
+    original.checkout(trunk_state, branch_name="alt")
     original.trace_step(func=lambda x=9: pd.DataFrame({"a": [x]}), func_name="load",
                          raw_line="load(9)", args=[9], kwargs={})
     settle(original)
-    assert original._branch.name != "main"  # sanity: auto-branch actually fired
+    assert original._branch.name != "main"  # sanity: the checkout-driven fork actually fired
 
     resumed = RuntimeTracker.resume(
         storage=storage, history_id=original._history.history_id, session_id="s2",
@@ -65,7 +69,11 @@ def test_resume_restores_the_branch_the_current_state_belongs_to(storage):
     assert resumed._branch.name == original._branch.name
 
 
-def test_resume_rebuilds_cell_executions_for_divergence_detection(storage):
+def test_resume_rebuilds_cell_executions(storage):
+    """_cell_executions is rebuilt on resume for last_call_params()'s benefit —
+    it no longer drives any auto-branching decision in this manual-only build
+    (see _resolve_input_state), so there's nothing left to "prove works" here
+    beyond the rebuilt structure itself being correct."""
     original = RuntimeTracker(storage=storage, session_id="s1", history_name="h")
     original.trace_step(func=lambda: pd.DataFrame({"a": [1]}), func_name="load",
                          raw_line="load()", args=[], kwargs={})
@@ -79,12 +87,11 @@ def test_resume_rebuilds_cell_executions_for_divergence_detection(storage):
     assert len(resumed._cell_executions["load"]) == 1
     assert resumed._cell_executions["load"][0]["output_state_id"] == original._current_state_id
 
-    # Prove it actually WORKS: calling "load" again with different args on the
-    # resumed tracker must auto-branch, exactly as it would have if the
-    # process had never restarted.
+    # Resuming and re-running "load" with different arguments, with no
+    # checkout, must just append — restart is not special.
     resumed.trace_step(func=lambda x=9: pd.DataFrame({"a": [x]}), func_name="load",
                         raw_line="load(9)", args=[9], kwargs={})
-    assert resumed._branch.branch_id != original._branch.branch_id
+    assert resumed._branch.branch_id == original._branch.branch_id
 
 
 def test_resume_raises_for_unknown_history_id(storage):

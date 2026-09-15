@@ -992,6 +992,46 @@ class DuckDBSQLiteBackend:
             con.close()
         return row[0] if row else None
 
+    def load_branch(self, branch_id: str) -> Optional[dict]:
+        """Return {branch_id, history_id, name, starts_at_state_id} for branch_id, or None."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT branch_id, history_id, name, starts_at_state_id FROM analysis_branches WHERE branch_id = ?",
+                _p(branch_id),
+            ).fetchone()
+        finally:
+            con.close()
+        if row is None:
+            return None
+        return {"branch_id": row[0], "history_id": row[1], "name": row[2], "starts_at_state_id": row[3]}
+
+    def load_child_steps(self, state_id: str) -> list[dict]:
+        """Return every AnalysisStep whose input_state_id is state_id — i.e. every
+        step that has already been executed starting from this exact state,
+        possibly on different branches. Used by the manual-branching model
+        (RuntimeTracker._resolve_input_state) to decide, after a checkout,
+        whether the next step re-treads an existing path or diverges from it.
+        """
+        con = self._connect(read_only=True)
+        try:
+            rows = con.execute(
+                """
+                SELECT s.step_id, s.func_name, s.output_state_id, st.branch_id, s.param_fingerprint
+                FROM analysis_steps s
+                JOIN analysis_states st ON st.state_id = s.output_state_id
+                WHERE s.input_state_id = ?
+                """,
+                _p(state_id),
+            ).fetchall()
+        finally:
+            con.close()
+        return [
+            {"step_id": r[0], "func_name": r[1], "output_state_id": r[2],
+             "branch_id": r[3], "param_fingerprint": r[4]}
+            for r in rows
+        ]
+
     def load_cell_executions(self, history_id: str) -> dict:
         """Rebuild the {func_name: [execution, ...]} shape RuntimeTracker._cell_executions
         uses for auto-branch divergence detection, from every step ever recorded

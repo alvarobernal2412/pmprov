@@ -773,6 +773,8 @@ class RuntimeTracker:
             mime_type = "application/vnd.plotly.v1+json"
         elif artifact_path.endswith(".filter.json"):
             mime_type = "application/x-pmprov-filter-index+json"
+        elif artifact_path.endswith(".ui_alias.json"):
+            mime_type = "application/x-pmprov-ui-alias+json"
         else:
             mime_type = "application/vnd.apache.parquet"
 

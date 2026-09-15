@@ -20,6 +20,11 @@ def _describe_state(self: "RuntimeTracker", state_id: str) -> dict:
     branch_name, operation, agent, environment, params, delta.
     Returns {} if state_id is the root state (no producing step).
 
+    A state produced by a UI interaction (tracker/ui_interactions.py) shows
+    up here like any other: func_name is "ui:<widget_type>[:<label>]", delta
+    is {"kind": "ui_interaction"} rather than a real DataFrame diff, and
+    params holds the widget's changed fields — no separate lookup needed.
+
     Parameters
     ----------
     state_id:

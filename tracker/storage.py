@@ -403,7 +403,27 @@ class DuckDBSQLiteBackend:
         if kind == "filter_index":
             return self._save_filter_index(node_id, obj, parent_state_id,
                                            parent_artifact_state_id=parent_artifact_state_id)
+        if kind == "ui_state_alias":
+            return self._save_ui_state_alias(node_id, parent_artifact_state_id=parent_artifact_state_id)
         return self._save_dataframe(node_id, obj)
+
+    def _save_ui_state_alias(self, node_id: str, *, parent_artifact_state_id: str) -> Optional[str]:
+        """Write ``<node_id>.ui_alias.json`` = {parent_artifact_state_id}. No data copy.
+
+        Used when a UI-interaction step (tracker/ui_interactions.py) produces a new AnalysisState whose
+        underlying DataFrame is unchanged from its parent (only the widget's
+        view configuration changed) — load_artifact resolves this by
+        delegating straight to the parent's own artifact, so a chatty widget
+        never triggers a repeated Parquet write of the same data.
+        """
+        try:
+            path = self.artifact_dir / f"{node_id}.ui_alias.json"
+            with open(str(path), "w", encoding="utf-8") as f:
+                json.dump({"parent_artifact_state_id": parent_artifact_state_id}, f)
+            return str(path)
+        except Exception as e:
+            log_storage_error(e, component="_save_ui_state_alias", node_id=node_id)
+            return None
 
     def _save_dataframe(self, node_id: str, df: Any) -> Optional[str]:
         """Write *df* to ``<artifact_dir>/<node_id>.parquet``."""
@@ -498,6 +518,15 @@ class DuckDBSQLiteBackend:
                 if parent_df is None:
                     return None
                 return parent_df.loc[index_values]
+            except Exception as e:
+                log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
+                return None
+
+        if mime_type == "application/x-pmprov-ui-alias+json":
+            try:
+                with open(content_ref, "r", encoding="utf-8") as f:
+                    alias_data = json.load(f)
+                return self.load_artifact(alias_data["parent_artifact_state_id"])
             except Exception as e:
                 log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
                 return None

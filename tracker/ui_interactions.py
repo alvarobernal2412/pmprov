@@ -173,6 +173,12 @@ def _trace_ui_step(
     self._history.active_state_id = output_state_id
     self.storage.update_history_active_state_async(self._history.history_id, output_state_id)
 
+    self._notify_step_observers(
+        state_id=output_state_id, step_id=step_id, func_name=func_name,
+        raw_line=raw_line, branch_name=self._branch.name,
+        params=param_values, delta={"kind": "ui_interaction"},
+    )
+
     return output_state_id
 
 

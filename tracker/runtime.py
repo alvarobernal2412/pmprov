@@ -218,6 +218,10 @@ class RuntimeTracker:
         # Maps func_name → callable, populated by trace_step for replay support.
         self._replay_func_registry: dict[str, Any] = {}
 
+        # Runtime observers: callback(step_detail: dict) fired synchronously
+        # after every trace_step()/trace_ui_step() — see tracker/observers.py.
+        self._step_observers: list[Any] = []
+
         # ---- Seed session-level provenance records -------------------------
         self._history = AnalysisHistory(
             history_id=_uid(),
@@ -317,6 +321,7 @@ class RuntimeTracker:
         self._cell_executions = storage.load_cell_executions(history_id)
         self._pending_checkout_state_id = None
         self._pending_checkout_branch_name = None
+        self._step_observers = []
 
         self.storage._executor.submit(
             self.storage._write_agent, self._agent, self._history.history_id
@@ -592,6 +597,12 @@ class RuntimeTracker:
         self._current_state_id = output_state_id
         self._history.active_state_id = output_state_id
         self.storage.update_history_active_state_async(self._history.history_id, output_state_id)
+
+        self._notify_step_observers(
+            state_id=output_state_id, step_id=step_id, func_name=func_name,
+            raw_line=raw_line, branch_name=self._branch.name,
+            params=param_values, delta=delta,
+        )
 
         return output
 

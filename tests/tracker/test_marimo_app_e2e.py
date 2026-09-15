@@ -94,15 +94,23 @@ def _run_pipeline(rt, fold_specs, activities, builder="set_based",
 
 
 def test_three_diagrams_one_session_three_branches(db_paths):
+    """Branching is manual-only: re-running the pipeline with different
+    config, with no checkout, would just append to main. Each subsequent
+    exploration here deliberately checks out back to the shared root first —
+    pmprov then replays the (identical) load/service steps and forks exactly
+    at apply_folds, the first step whose arguments actually differ."""
     db_path, artifact_dir = db_paths
     rt = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     history_id = rt._history.history_id
+    root_state_id = rt._root_state_id
 
     _run_pipeline(rt, fold_specs=[], activities=["submit", "review", "approve"])
     branch1 = rt._branch.branch_id
+    rt.checkout(root_state_id, branch_name="fold_F1")
     _run_pipeline(rt, fold_specs=[{"name": "F1", "activities": ["review"]}],
                   activities=["submit", "F1", "approve"])
     branch2 = rt._branch.branch_id
+    rt.checkout(root_state_id, branch_name="fold_F2")
     _run_pipeline(rt, fold_specs=[{"name": "F2", "activities": ["approve"]}],
                   activities=["submit", "review", "F2"])
     branch3 = rt._branch.branch_id
@@ -128,9 +136,13 @@ def test_three_diagrams_one_session_three_branches(db_paths):
 
 
 def test_stop_resume_default_forks_new_branch_same_history(db_paths):
+    """Restart alone forks nothing (manual-only branching) — the resumed
+    session deliberately checks out to root before exploring a different
+    fold config, which is what actually produces the new branch here."""
     db_path, artifact_dir = db_paths
     rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     history_id = rt1._history.history_id
+    root_state_id = rt1._root_state_id
     _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
     settle(rt1)
     branch1 = rt1._branch.branch_id
@@ -138,6 +150,7 @@ def test_stop_resume_default_forks_new_branch_same_history(db_paths):
     rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     assert rt2._history.history_id == history_id
     assert rt2._branch.branch_id == branch1
+    rt2.checkout(root_state_id, branch_name="fold_F1")
     _run_pipeline(rt2, fold_specs=[{"name": "F1", "activities": ["review"]}],
                   activities=["submit", "F1", "approve"])
     settle(rt2)
@@ -243,19 +256,21 @@ def test_four_restart_chain_threads_pointers_correctly(db_paths):
     db_path, artifact_dir = db_paths
     rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     history_id = rt1._history.history_id
+    root_state_id = rt1._root_state_id
     _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
     settle(rt1)
     branch1 = rt1._branch.branch_id
 
-    # restart 2: same params -> no new branch
+    # restart 2: same params, no checkout -> just appends further onto branch1
     rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     _run_pipeline(rt2, fold_specs=[], activities=["submit", "review", "approve"])
     settle(rt2)
     assert rt2._branch.branch_id == branch1
 
-    # restart 3: different params -> new branch
+    # restart 3: deliberately checks out to root to explore different params -> new branch
     rt3 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     assert rt3._branch.branch_id == branch1
+    rt3.checkout(root_state_id, branch_name="fold_F1")
     _run_pipeline(rt3, fold_specs=[{"name": "F1", "activities": ["review"]}],
                   activities=["submit", "F1", "approve"])
     settle(rt3)
@@ -275,24 +290,36 @@ def test_four_restart_chain_threads_pointers_correctly(db_paths):
 
 
 def test_branch_off_a_branch_non_flat_tree(db_paths):
+    """A genuinely nested tree: branch3 forks off branch2's OWN tip (deeper
+    than root), not off the shared root ancestor branch2 itself forked from.
+    That means resuming mid-branch2 and diverging on just its last step
+    (generate_sankey_figure), not replaying the whole pipeline from scratch —
+    checking out to branch2's tip and immediately trying a different sankey
+    config finds nothing to rejoin there, so it forks right at that tip."""
     db_path, artifact_dir = db_paths
     rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     history_id = rt1._history.history_id
+    root_state_id = rt1._root_state_id
     _run_pipeline(rt1, fold_specs=[], activities=["submit", "review", "approve"])
     settle(rt1)
 
     rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    rt2.checkout(root_state_id, branch_name="branch2")
     _run_pipeline(rt2, fold_specs=[{"name": "F1", "activities": ["review"]}],
                   activities=["submit", "F1", "approve"])
     settle(rt2)
     branch2 = rt2._branch.branch_id
+    branch2_tip_state = rt2._current_state_id
 
-    # Resume onto branch2 specifically, diverge again from there.
+    # Resume onto branch2 specifically, then deliberately check out to its
+    # own tip to try a different Sankey config built on top of branch2's fold.
     rt3 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     assert rt3._branch.branch_id == branch2
-    _run_pipeline(rt3, fold_specs=[{"name": "F1", "activities": ["review"]},
-                                    {"name": "F2", "activities": ["approve"]}],
-                  activities=["submit", "F1", "F2"])
+    rt3.checkout(branch2_tip_state, branch_name="branch3")
+    rt3.trace_step(func=generate_sankey_figure, func_name="generate_sankey_figure",
+                    raw_line="generate_sankey_figure(...)",
+                    args=[_ServiceStub(LOG), ["submit", "F1", "approve", "review"],
+                          "set_based", True, True], kwargs={})
     settle(rt3)
     branch3 = rt3._branch.branch_id
     assert branch3 != branch2
@@ -447,6 +474,7 @@ def test_last_call_params_survives_divergence_on_later_step(db_paths):
     because the tracker is now on a different branch_id."""
     db_path, artifact_dir = db_paths
     rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
+    root_state_id = rt1._root_state_id
     _run_pipeline(rt1, fold_specs=[{"name": "F1", "activities": ["review"]}],
                   activities=["submit", "F1", "approve"])
     settle(rt1)
@@ -454,7 +482,11 @@ def test_last_call_params_survives_divergence_on_later_step(db_paths):
 
     rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="app")
     assert rt2._branch.branch_id == branch1
-    # Same fold_specs, different activities -- diverges only at generate_sankey_figure.
+    # Deliberately replay from root: read_csv_stub, create_service_stub and
+    # apply_folds all exactly repeat rt1's calls (same fold_specs) and
+    # rejoin branch1 -- only generate_sankey_figure's activities differ, so
+    # that's exactly where this forks.
+    rt2.checkout(root_state_id, branch_name="different_activities")
     _run_pipeline(rt2, fold_specs=[{"name": "F1", "activities": ["review"]}],
                   activities=["submit", "F1", "approve", "review"])
     settle(rt2)

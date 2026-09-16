@@ -403,7 +403,10 @@ class DuckDBSQLiteBackend:
         if kind == "filter_index":
             return self._save_filter_index(node_id, obj, parent_state_id,
                                            parent_artifact_state_id=parent_artifact_state_id)
-        if kind == "ui_state_alias":
+        if kind in ("ui_state_alias", "artifact_alias"):
+            # Same mechanism, two names: "ui_state_alias" for a UI-interaction
+            # step's own artifact, "artifact_alias" for every OTHER artifact
+            # that step didn't touch (see _link_untouched_artifacts).
             return self._save_ui_state_alias(node_id, parent_artifact_state_id=parent_artifact_state_id)
         return self._save_dataframe(node_id, obj)
 
@@ -567,11 +570,25 @@ class DuckDBSQLiteBackend:
             return None
 
     def load_output_artifact_state_id(self, output_state_id: str) -> Optional[str]:
-        """Return the artifact_state_id produced by the given output_state_id, or None."""
+        """Return the artifact_state_id this state's own step actually
+        produced (materialized new content here), or None.
+
+        Deliberately excludes alias rows (mime_type
+        'application/x-pmprov-ui-alias+json') -- those link an artifact this
+        state's step did NOT touch, carried forward for the "what's the
+        current artifact set" overview (see _link_untouched_artifacts in
+        runtime.py). Answering "does THIS state have its own materialized
+        artifact" must ignore them, or every state would look snapshotted.
+        """
         con = self._connect(read_only=True)
         try:
             row = con.execute(
-                "SELECT artifact_state_id FROM artifact_states WHERE analysis_state_id = ? LIMIT 1",
+                """
+                SELECT artifact_state_id FROM artifact_states
+                WHERE analysis_state_id = ?
+                  AND mime_type != 'application/x-pmprov-ui-alias+json'
+                LIMIT 1
+                """,
                 _p(output_state_id),
             ).fetchone()
             return row[0] if row else None
@@ -779,10 +796,14 @@ class DuckDBSQLiteBackend:
                 if not produced_by_step_id:
                     break  # reached the root — no step to record for it
 
+                # Excludes alias rows -- see load_output_artifact_state_id's
+                # docstring. A state only counts as "has_artifact" here if
+                # its own step actually materialized new content.
                 has_artifact = con.execute(
                     """
                     SELECT 1 FROM artifact_states
                     WHERE analysis_state_id = ? AND content_ref IS NOT NULL
+                      AND mime_type != 'application/x-pmprov-ui-alias+json'
                     LIMIT 1
                     """,
                     _p(current_id),

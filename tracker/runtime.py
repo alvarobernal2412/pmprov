@@ -37,6 +37,7 @@ import inspect
 import json
 import platform
 import sys
+import time
 import uuid
 from typing import Any, Optional
 
@@ -194,6 +195,12 @@ class RuntimeTracker:
         # Artifact identity registries (scoped to this session)
         self._artifact_registry: dict[int, str] = {}
         self._artifact_state_registry: dict[int, str] = {}
+        # artifact_id -> latest artifact_state_id, across ALL tracked artifacts
+        # (not keyed by Python object identity like the two above) -- lets
+        # every new AnalysisState link the complete current artifact set, not
+        # just whatever this one step happened to touch. See
+        # _link_untouched_artifacts().
+        self._artifact_id_to_latest_state: dict[str, str] = {}
 
         # Operation cache: func_name → (Operation, OperationType)
         self._operation_cache: dict[str, tuple[Operation, OperationType]] = {}
@@ -286,6 +293,7 @@ class RuntimeTracker:
 
         self._artifact_registry = {}
         self._artifact_state_registry = {}
+        self._artifact_id_to_latest_state = {}
         self._operation_cache = {}
         self._abstraction_registry = {}
         self._abstraction_cache = {}
@@ -397,7 +405,9 @@ class RuntimeTracker:
             pre_snaps[f"kwarg_{k}"] = capture_snapshot(v)
 
         # ---- 2. Execute (user exceptions always propagate) -------------------
+        _call_start = time.perf_counter()
         output = func(*args, **kwargs)
+        _elapsed_seconds = time.perf_counter() - _call_start
         self._replay_func_registry[func_name] = func
 
         # ---- 3. Post-snapshots -----------------------------------------------
@@ -534,7 +544,7 @@ class RuntimeTracker:
         if (
             _artifact_kind in {"dataframe", "figure"}
             and output is not None
-            and should_snapshot(func_name, op_type.name)
+            and should_snapshot(func_name, op_type.name, elapsed_seconds=_elapsed_seconds)
         ):
             try:
                 if _artifact_kind == "dataframe":
@@ -579,12 +589,18 @@ class RuntimeTracker:
             self.storage.save_param_values_async(param_values)
         if delta:
             self.storage.save_delta_async(delta, step_id)
+        _touched_artifact_id = None
         if artifact_path:
             artifact_state_obj = artifact_records.get("artifact_state_obj")
             if artifact_state_obj:
                 self.storage.save_artifact_records_async(
                     artifact_records.get("artifact_obj"), artifact_state_obj, self._history.history_id
                 )
+                _touched_artifact_id = artifact_state_obj.artifact_id
+        # Every state is a complete snapshot of the artifact set: link every
+        # OTHER already-known artifact forward to this state too, aliased
+        # rather than re-persisted (see _link_untouched_artifacts).
+        self._link_untouched_artifacts(output_state_id, _touched_artifact_id)
 
         # Record this execution for future divergence checks on this func.
         self._cell_executions.setdefault(func_name, []).append({
@@ -855,7 +871,54 @@ class RuntimeTracker:
             size_bytes=size_bytes,
         )
         self._artifact_state_registry[obj_python_id] = artifact_state.artifact_state_id
+        self._artifact_id_to_latest_state[artifact_id] = artifact_state.artifact_state_id
         return {"artifact_obj": artifact, "artifact_state_obj": artifact_state}
+
+    def _link_untouched_artifacts(
+        self, output_state_id: str, touched_artifact_id: Optional[str] = None,
+    ) -> None:
+        """
+        Every AnalysisState is meant to be a complete snapshot of the current
+        artifact set, not just whatever this one step happened to touch. For
+        every artifact this step did NOT modify, link it forward to
+        output_state_id via a cheap alias row (a tiny pointer file, same
+        mechanism as UI-interaction states) instead of re-serializing it --
+        a histogram/data_explorer render, or any step that isn't a data
+        transform, should never trigger a duplicate Parquet write of
+        artifacts it never touched.
+
+        Known cost trade-off: this writes one small alias row per untouched
+        artifact per step, so a session that accumulates many distinct
+        snapshot-worthy artifacts (most pandas calls return a new object, so
+        this grows with the number of DISTINCT tracked DataFrames/figures,
+        not the number of steps) will see that cost grow accordingly. Still
+        far cheaper than re-persisting full Parquet content, but not O(1).
+        """
+        for artifact_id, latest_state_id in list(self._artifact_id_to_latest_state.items()):
+            if artifact_id == touched_artifact_id:
+                continue
+            try:
+                alias_path = self.storage.save_artifact(
+                    output_state_id, None, kind="artifact_alias",
+                    parent_artifact_state_id=latest_state_id,
+                )
+                if not alias_path:
+                    continue
+                checksum_hex, size_bytes = _checksum_and_size(alias_path)
+                alias_state = ArtifactState(
+                    artifact_state_id=_uid(),
+                    artifact_id=artifact_id,
+                    analysis_state_id=output_state_id,
+                    mime_type="application/x-pmprov-ui-alias+json",
+                    checksum=f"sha256:{checksum_hex}",
+                    content_ref=alias_path,
+                    size_bytes=size_bytes,
+                )
+                self.storage.save_artifact_records_async(None, alias_state, self._history.history_id)
+                self._artifact_id_to_latest_state[artifact_id] = alias_state.artifact_state_id
+            except Exception as e:
+                log_trace_warning("untouched-artifact link failed",
+                                  step="link_untouched_artifacts", artifact_id=artifact_id, error=e)
 
     def _make_param_value(self, param_id: str, step_id: str, value: Any):
         """Map a runtime Python value to the appropriate ParameterValue subclass."""

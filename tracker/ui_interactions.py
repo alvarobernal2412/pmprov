@@ -155,12 +155,19 @@ def _trace_ui_step(
     # deltas table (e.g. visualizations.py) see an explicit marker rather
     # than a missing row that looks like an omission.
     self.storage.save_delta_async({"kind": "ui_interaction"}, step_id)
+    _touched_artifact_id = None
     if artifact_path:
         artifact_state_obj = artifact_records.get("artifact_state_obj")
         if artifact_state_obj:
             self.storage.save_artifact_records_async(
                 artifact_records.get("artifact_obj"), artifact_state_obj, self._history.history_id
             )
+            _touched_artifact_id = artifact_state_obj.artifact_id
+    # Every state is a complete snapshot of the artifact set -- link every
+    # OTHER already-known artifact forward too (see _link_untouched_artifacts
+    # in runtime.py). df's own artifact was just aliased above; this covers
+    # everything else the notebook has ever produced.
+    self._link_untouched_artifacts(output_state_id, _touched_artifact_id)
 
     self._cell_executions.setdefault(func_name, []).append({
         "input_state_id": input_state_id,

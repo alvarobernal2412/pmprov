@@ -37,6 +37,7 @@ import inspect
 import json
 import platform
 import sys
+import time
 import uuid
 from typing import Any, Optional
 
@@ -194,12 +195,27 @@ class RuntimeTracker:
         # Artifact identity registries (scoped to this session)
         self._artifact_registry: dict[int, str] = {}
         self._artifact_state_registry: dict[int, str] = {}
+        # artifact_id -> latest artifact_state_id, across ALL tracked artifacts
+        # (not keyed by Python object identity like the two above) -- lets
+        # every new AnalysisState link the complete current artifact set, not
+        # just whatever this one step happened to touch. See
+        # _link_untouched_artifacts().
+        self._artifact_id_to_latest_state: dict[str, str] = {}
 
         # Operation cache: func_name → (Operation, OperationType)
         self._operation_cache: dict[str, tuple[Operation, OperationType]] = {}
 
-        # Branch-divergence detection: func_name → list of execution records
+        # Execution history: func_name → list of execution records. No longer
+        # used to auto-detect divergence (branching is manual-only, see
+        # checkout() / _resolve_input_state()) — kept for last_call_params()
+        # and any future auditing use.
         self._cell_executions: dict[str, list[dict]] = {}
+
+        # Set by checkout(); consumed by the very next trace_step/
+        # trace_ui_step call. See _resolve_input_state() for the manual-only
+        # branching rule this drives.
+        self._pending_checkout_state_id: Optional[str] = None
+        self._pending_checkout_branch_name: Optional[str] = None
 
         # Abstraction registry: name → callable(df, state_id) -> Any
         self._abstraction_registry: dict[str, Any] = {}
@@ -208,6 +224,10 @@ class RuntimeTracker:
 
         # Maps func_name → callable, populated by trace_step for replay support.
         self._replay_func_registry: dict[str, Any] = {}
+
+        # Runtime observers: callback(step_detail: dict) fired synchronously
+        # after every trace_step()/trace_ui_step() — see tracker/observers.py.
+        self._step_observers: list[Any] = []
 
         # ---- Seed session-level provenance records -------------------------
         self._history = AnalysisHistory(
@@ -273,6 +293,7 @@ class RuntimeTracker:
 
         self._artifact_registry = {}
         self._artifact_state_registry = {}
+        self._artifact_id_to_latest_state = {}
         self._operation_cache = {}
         self._abstraction_registry = {}
         self._abstraction_cache = {}
@@ -306,6 +327,9 @@ class RuntimeTracker:
         )
 
         self._cell_executions = storage.load_cell_executions(history_id)
+        self._pending_checkout_state_id = None
+        self._pending_checkout_branch_name = None
+        self._step_observers = []
 
         self.storage._executor.submit(
             self.storage._write_agent, self._agent, self._history.history_id
@@ -381,7 +405,9 @@ class RuntimeTracker:
             pre_snaps[f"kwarg_{k}"] = capture_snapshot(v)
 
         # ---- 2. Execute (user exceptions always propagate) -------------------
+        _call_start = time.perf_counter()
         output = func(*args, **kwargs)
+        _elapsed_seconds = time.perf_counter() - _call_start
         self._replay_func_registry[func_name] = func
 
         # ---- 3. Post-snapshots -----------------------------------------------
@@ -493,9 +519,9 @@ class RuntimeTracker:
                               step="fingerprint", func_name=func_name, error=e)
             fp = str(uuid.uuid4())
         try:
-            input_state_id = self._detect_and_apply_branch(func_name, fp)
+            input_state_id = self._resolve_input_state(func_name, fp)
         except Exception as e:
-            log_trace_warning("branch detection failed, staying on current branch",
+            log_trace_warning("post-checkout branch resolution failed, staying on current branch",
                               step="branch_detection", func_name=func_name, error=e)
             input_state_id = self._current_state_id
 
@@ -518,7 +544,7 @@ class RuntimeTracker:
         if (
             _artifact_kind in {"dataframe", "figure"}
             and output is not None
-            and should_snapshot(func_name, op_type.name)
+            and should_snapshot(func_name, op_type.name, elapsed_seconds=_elapsed_seconds)
         ):
             try:
                 if _artifact_kind == "dataframe":
@@ -563,12 +589,18 @@ class RuntimeTracker:
             self.storage.save_param_values_async(param_values)
         if delta:
             self.storage.save_delta_async(delta, step_id)
+        _touched_artifact_id = None
         if artifact_path:
             artifact_state_obj = artifact_records.get("artifact_state_obj")
             if artifact_state_obj:
                 self.storage.save_artifact_records_async(
                     artifact_records.get("artifact_obj"), artifact_state_obj, self._history.history_id
                 )
+                _touched_artifact_id = artifact_state_obj.artifact_id
+        # Every state is a complete snapshot of the artifact set: link every
+        # OTHER already-known artifact forward to this state too, aliased
+        # rather than re-persisted (see _link_untouched_artifacts).
+        self._link_untouched_artifacts(output_state_id, _touched_artifact_id)
 
         # Record this execution for future divergence checks on this func.
         self._cell_executions.setdefault(func_name, []).append({
@@ -582,37 +614,69 @@ class RuntimeTracker:
         self._history.active_state_id = output_state_id
         self.storage.update_history_active_state_async(self._history.history_id, output_state_id)
 
+        self._notify_step_observers(
+            state_id=output_state_id, step_id=step_id, func_name=func_name,
+            raw_line=raw_line, branch_name=self._branch.name,
+            params=param_values, delta=delta,
+        )
+
         return output
 
-    def checkout(self, state_id: str, branch_name: Optional[str] = None) -> AnalysisBranch:
+    def checkout(self, state_id: str, branch_name: Optional[str] = None) -> None:
         """
-        Case-2 branching: manually rewind to a previous analysis state and
-        start a new branch from it.
+        Manually rewind to a previous analysis state, WITHOUT creating a
+        branch yet.
 
-        Call this when you want to explore a different analysis path from a
-        state that was computed earlier in the session — for example, to try
-        a different algorithm after an earlier pre-processing step.
+        Branching in this build is manual-only: nothing forks automatically
+        just because arguments differ from an earlier run (contrast the
+        auto-divergence behaviour on the `feat/ui-interactions` branch).
+        checkout() only moves "where the analyst currently is" back to
+        state_id, staying on whichever branch state_id already belongs to.
+
+        A branch is created lazily, only once a step actually diverges from
+        something that was already executed from state_id (see
+        _resolve_input_state()). This isn't limited to the single next step —
+        as long as each step exactly repeats one that already happened from
+        the current replay position, it rejoins and pmprov keeps checking
+        the step after that too:
+
+        - If nothing has ever run from state_id, the very next step forks
+          immediately, starting at state_id.
+        - If a step is an identical repeat of one that already ran from the
+          current replay position (same func_name + param_fingerprint), it
+          rejoins that existing branch and replay continues into the step
+          after it — e.g. re-running a whole pipeline where only the third
+          call actually has different arguments forks exactly there, with
+          the first two calls rejoining rather than forking pointlessly.
+        - The first step that doesn't match anything forks, starting at
+          wherever the replay position had advanced to by then. That fork
+          ends the replay — everything after it just appends normally.
 
         Parameters
         ----------
         state_id:
-            The ``AnalysisState.state_id`` to resume from.  Must correspond to
-            a node already persisted in the provenance DB.
+            The ``AnalysisState.state_id`` to resume from. Must already
+            belong to a persisted branch.
         branch_name:
-            Optional label for the new branch.  Defaults to
-            ``"branch-<first-8-chars-of-state_id>"``.
-
-        Returns
-        -------
-        AnalysisBranch
-            The newly created branch, already persisted to storage.
+            Optional label to use IF a branch ends up being created by the
+            next step. Ignored if that step doesn't diverge from anything.
         """
-        name = branch_name or f"branch-{state_id[:8]}"
-        branch = self._create_branch(starts_at=state_id, name=name)
+        branch_id = self.storage.load_state_branch_id(state_id)
+        if branch_id is None:
+            raise ValueError(f"checkout: unknown state_id {state_id!r}")
+        branch_row = self.storage.load_branch(branch_id)
+        self._branch = AnalysisBranch(
+            branch_id=branch_row["branch_id"],
+            history_id=branch_row["history_id"],
+            name=branch_row["name"],
+            starts_at_state_id=branch_row["starts_at_state_id"],
+        )
+        self._current_state_id = state_id
+        self._pending_checkout_state_id = state_id
+        self._pending_checkout_branch_name = branch_name
         # active_state_id reflects where the analyst is now — the checkout point.
         self._history.active_state_id = state_id
         self.storage.update_history_active_state_async(self._history.history_id, state_id)
-        return branch
 
     def create_pipeline(self, name: str, step_ids: list[str]) -> str:
         """Record a named Pipeline covering the given step_ids in order. Returns pipeline_id."""
@@ -626,50 +690,69 @@ class RuntimeTracker:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _detect_and_apply_branch(self, func_name: str, fp: str) -> str:
+    def _resolve_input_state(self, func_name: str, fp: str) -> str:
         """
-        Case-1 auto-branching: detect whether the current call diverges from
-        a prior execution of the same function on the current branch.
+        Manual-only branching: never fork on its own during ordinary
+        execution. Forking is only ever considered while "replaying" after a
+        checkout() — see checkout()'s docstring.
 
-        A divergence is detected when ``func_name`` has been executed on
-        ``self._branch`` before AND the previous execution used different
-        argument values (different ``param_fingerprint``).
-
-        When a divergence is found:
-        - A new AnalysisBranch is created, starting at the *input state* of
-          the previous execution.  That input state is the true fork point in
-          the analysis DAG.
-        - ``self._branch`` and ``self._current_state_id`` are updated so that
-          all subsequent steps are recorded on the new branch.
+        This replay isn't limited to a single step: as long as each step
+        exactly repeats one that already ran from the current replay
+        position (same func_name + fingerprint), it rejoins that existing
+        lineage and the replay position advances to keep checking the *next*
+        step too — e.g. re-running a whole multi-step pipeline after a
+        restart, where only the third call actually uses different
+        arguments, forks exactly at that third step, with the first two
+        rejoining their original branch rather than forking pointlessly.
+        The very first step that does NOT match anything (whether because
+        nothing exists there yet, or because what exists differs) forks —
+        and that fork ends the replay: every step after it just appends
+        normally, like any ordinary execution.
 
         Returns
         -------
         str
-            The ``input_state_id`` for the step about to be recorded.  This is
-            either ``self._current_state_id`` (no branch) or the prior
-            execution's input state (branch created).
+            The ``input_state_id`` for the step about to be recorded.
         """
-        prior = self._cell_executions.get(func_name, [])
-
-        # Find the most recent execution on the current branch with different params.
-        divergence = next(
-            (
-                e for e in reversed(prior)
-                if e["branch_id"] == self._branch.branch_id
-                and e["param_fingerprint"] != fp
-            ),
-            None,
-        )
-
-        if divergence is None:
+        if self._pending_checkout_state_id is None:
             return self._current_state_id
 
-        # Auto-generate a branch name that captures the context.
-        branch_name = f"branch-{func_name[:24]}-{divergence['input_state_id'][:8]}"
-        new_branch = self._create_branch(
-            starts_at=divergence["input_state_id"],
-            name=branch_name,
+        checkout_state_id = self._pending_checkout_state_id
+        branch_name = self._pending_checkout_branch_name
+
+        children = self.storage.load_child_steps(checkout_state_id)
+        # NOTE: "deep comparison" here is the same func_name + param_fingerprint
+        # (truncated-string MD5) used elsewhere in this module, not a true
+        # structural equality of the live argument objects. See the
+        # conversation / PR description for why a full deep-equality
+        # comparator was out of scope for this pass.
+        match = next(
+            (c for c in children if c["func_name"] == func_name and c["param_fingerprint"] == fp),
+            None,
         )
+        if match is not None:
+            # Identical step already exists here — rejoin that lineage and
+            # keep replaying: a later step might still diverge.
+            branch_row = self.storage.load_branch(match["branch_id"])
+            self._branch = AnalysisBranch(
+                branch_id=branch_row["branch_id"],
+                history_id=branch_row["history_id"],
+                name=branch_row["name"],
+                starts_at_state_id=branch_row["starts_at_state_id"],
+            )
+            self._pending_checkout_state_id = match["output_state_id"]
+            # branch_name carried forward unchanged, in case a later step in
+            # this same replay is what actually ends up diverging.
+            return checkout_state_id
+
+        # No match — the actual point of divergence. Fork here and stop
+        # replaying; nothing after this is checked again.
+        self._pending_checkout_state_id = None
+        self._pending_checkout_branch_name = None
+
+        # Genuine divergence: this is the one case that creates a branch.
+        name = branch_name or f"branch-{func_name[:24]}-{checkout_state_id[:8]}"
+        new_branch = self._create_branch(starts_at=checkout_state_id, name=name)
         return new_branch.starts_at_state_id
 
     def _create_branch(self, starts_at: str, name: str) -> AnalysisBranch:
@@ -773,6 +856,8 @@ class RuntimeTracker:
             mime_type = "application/vnd.plotly.v1+json"
         elif artifact_path.endswith(".filter.json"):
             mime_type = "application/x-pmprov-filter-index+json"
+        elif artifact_path.endswith(".ui_alias.json"):
+            mime_type = "application/x-pmprov-ui-alias+json"
         else:
             mime_type = "application/vnd.apache.parquet"
 
@@ -786,7 +871,54 @@ class RuntimeTracker:
             size_bytes=size_bytes,
         )
         self._artifact_state_registry[obj_python_id] = artifact_state.artifact_state_id
+        self._artifact_id_to_latest_state[artifact_id] = artifact_state.artifact_state_id
         return {"artifact_obj": artifact, "artifact_state_obj": artifact_state}
+
+    def _link_untouched_artifacts(
+        self, output_state_id: str, touched_artifact_id: Optional[str] = None,
+    ) -> None:
+        """
+        Every AnalysisState is meant to be a complete snapshot of the current
+        artifact set, not just whatever this one step happened to touch. For
+        every artifact this step did NOT modify, link it forward to
+        output_state_id via a cheap alias row (a tiny pointer file, same
+        mechanism as UI-interaction states) instead of re-serializing it --
+        a histogram/data_explorer render, or any step that isn't a data
+        transform, should never trigger a duplicate Parquet write of
+        artifacts it never touched.
+
+        Known cost trade-off: this writes one small alias row per untouched
+        artifact per step, so a session that accumulates many distinct
+        snapshot-worthy artifacts (most pandas calls return a new object, so
+        this grows with the number of DISTINCT tracked DataFrames/figures,
+        not the number of steps) will see that cost grow accordingly. Still
+        far cheaper than re-persisting full Parquet content, but not O(1).
+        """
+        for artifact_id, latest_state_id in list(self._artifact_id_to_latest_state.items()):
+            if artifact_id == touched_artifact_id:
+                continue
+            try:
+                alias_path = self.storage.save_artifact(
+                    output_state_id, None, kind="artifact_alias",
+                    parent_artifact_state_id=latest_state_id,
+                )
+                if not alias_path:
+                    continue
+                checksum_hex, size_bytes = _checksum_and_size(alias_path)
+                alias_state = ArtifactState(
+                    artifact_state_id=_uid(),
+                    artifact_id=artifact_id,
+                    analysis_state_id=output_state_id,
+                    mime_type="application/x-pmprov-ui-alias+json",
+                    checksum=f"sha256:{checksum_hex}",
+                    content_ref=alias_path,
+                    size_bytes=size_bytes,
+                )
+                self.storage.save_artifact_records_async(None, alias_state, self._history.history_id)
+                self._artifact_id_to_latest_state[artifact_id] = alias_state.artifact_state_id
+            except Exception as e:
+                log_trace_warning("untouched-artifact link failed",
+                                  step="link_untouched_artifacts", artifact_id=artifact_id, error=e)
 
     def _make_param_value(self, param_id: str, step_id: str, value: Any):
         """Map a runtime Python value to the appropriate ParameterValue subclass."""

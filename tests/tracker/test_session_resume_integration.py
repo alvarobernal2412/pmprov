@@ -1,10 +1,16 @@
 # tests/tracker/test_session_resume_integration.py
 """
 End-to-end proof of the full session-resume story, independent of any
-notebook: two "sessions" (separate RuntimeTracker instances, as a kernel
-restart would produce) sharing one on-disk db, producing three branches --
-matching the acceptance scenario from
-docs/superpowers/specs/2026-09-03-session-resume-design.md.
+notebook: three "sessions" (separate RuntimeTracker instances, as kernel
+restarts would produce) sharing one on-disk db, producing three branches --
+adapted from the acceptance scenario in
+docs/superpowers/specs/2026-09-03-session-resume-design.md for manual-only
+branching. That spec's original scenario forked automatically purely from
+differing arguments across restarts, with no checkout() anywhere -- this
+build removed that trigger entirely (see conversation / PR description), so
+each divergence below is now a deliberate checkout(), exercised across a
+real process restart to prove resume() and the lazy-branch-on-checkout
+mechanics compose correctly.
 """
 import pandas as pd
 import pytest
@@ -29,29 +35,35 @@ def test_three_sessions_same_name_produce_one_history_three_branches(db_paths):
     db_path, artifact_dir = db_paths
     event_log = pd.DataFrame({"case": ["A", "A", "B"], "activity": ["x", "y", "x"]})
 
-    # Session 1: load data, build first Sankey.
+    # Session 1: load data, build first Sankey (both land on "main").
     rt1 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="proc")
     rt1.trace_step(func=lambda: event_log, func_name="load",
                     raw_line="load()", args=[], kwargs={})
+    after_load_state = rt1._current_state_id
     rt1.trace_step(func=_sankey, func_name="sankey", raw_line="sankey(df, [x])",
                     args=[event_log, ["x"]], kwargs={})
     settle(rt1)
     history_id = rt1._history.history_id
 
-    # Session 2 ("kernel restart"): resumes by default, different Sankey config
-    # diverges into a new branch.
+    # Session 2 ("kernel restart"): resumes by default. Manual-only branching
+    # means a different Sankey config alone would just append to "main" --
+    # the analyst deliberately checks out back to right after "load" to
+    # explore a second configuration as its own branch.
     rt2 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="proc")
     assert rt2._history.history_id == history_id
+    rt2.checkout(after_load_state, branch_name="sankey_y")
     rt2.trace_step(func=_sankey, func_name="sankey", raw_line="sankey(df, [y])",
                     args=[event_log, ["y"]], kwargs={})
     settle(rt2)
     branch_after_2 = rt2._branch.branch_id
     assert branch_after_2 != rt1._branch.branch_id
 
-    # Session 3: resumes session 2's branch, another distinct config diverges again.
+    # Session 3: resumes session 2's branch, then deliberately checks out to
+    # the SAME shared trunk state to explore a third, sibling configuration.
     rt3 = init_marimo(db_path=db_path, artifact_dir=artifact_dir, history_name="proc")
     assert rt3._history.history_id == history_id
     assert rt3._branch.branch_id == branch_after_2
+    rt3.checkout(after_load_state, branch_name="sankey_xy")
     rt3.trace_step(func=_sankey, func_name="sankey", raw_line="sankey(df, [x, y])",
                     args=[event_log, ["x", "y"]], kwargs={})
     settle(rt3)

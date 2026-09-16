@@ -41,7 +41,7 @@ from tracker.kernel_hooks import init_jupyter, init_marimo, patch_marimo_ast_com
 from tracker.logger import get_logger, enable_logging
 from tracker.operation_registry import operation_type, step_category
 from tracker.runtime import RuntimeTracker
-from tracker.snapshot_policy import snapshot_policy, snapshot_policy_for_type
+from tracker.snapshot_policy import snapshot_policy, snapshot_policy_for_type, set_default_snapshot_threshold
 from tracker.storage import DuckDBSQLiteBackend, StorageBackend
 from tracker.visualizations import (
     build_display_graph,
@@ -59,6 +59,8 @@ import tracker.introspection  # noqa: F401 — patches describe_state / list_bra
 import tracker.comparison  # noqa: F401 — patches compare_states / compare_histories onto RuntimeTracker
 import tracker.pruning  # noqa: F401 — patches build_pruned_view / save_pruned_view / load_pruned_view onto RuntimeTracker
 import tracker.annotations  # noqa: F401 — patches annotate / tag / list_annotations / list_tags onto RuntimeTracker
+import tracker.ui_interactions  # noqa: F401 — patches trace_ui_step onto RuntimeTracker
+import tracker.observers  # noqa: F401 — patches on_step onto RuntimeTracker
 
 
 def omit_functions(*names: str) -> None:
@@ -86,6 +88,7 @@ __all__ = [
     "step_category",
     "snapshot_policy",
     "snapshot_policy_for_type",
+    "set_default_snapshot_threshold",
     "get_logger",
     "enable_logging",
     "RuntimeTracker",

@@ -403,7 +403,30 @@ class DuckDBSQLiteBackend:
         if kind == "filter_index":
             return self._save_filter_index(node_id, obj, parent_state_id,
                                            parent_artifact_state_id=parent_artifact_state_id)
+        if kind in ("ui_state_alias", "artifact_alias"):
+            # Same mechanism, two names: "ui_state_alias" for a UI-interaction
+            # step's own artifact, "artifact_alias" for every OTHER artifact
+            # that step didn't touch (see _link_untouched_artifacts).
+            return self._save_ui_state_alias(node_id, parent_artifact_state_id=parent_artifact_state_id)
         return self._save_dataframe(node_id, obj)
+
+    def _save_ui_state_alias(self, node_id: str, *, parent_artifact_state_id: str) -> Optional[str]:
+        """Write ``<node_id>.ui_alias.json`` = {parent_artifact_state_id}. No data copy.
+
+        Used when a UI-interaction step (tracker/ui_interactions.py) produces a new AnalysisState whose
+        underlying DataFrame is unchanged from its parent (only the widget's
+        view configuration changed) — load_artifact resolves this by
+        delegating straight to the parent's own artifact, so a chatty widget
+        never triggers a repeated Parquet write of the same data.
+        """
+        try:
+            path = self.artifact_dir / f"{node_id}.ui_alias.json"
+            with open(str(path), "w", encoding="utf-8") as f:
+                json.dump({"parent_artifact_state_id": parent_artifact_state_id}, f)
+            return str(path)
+        except Exception as e:
+            log_storage_error(e, component="_save_ui_state_alias", node_id=node_id)
+            return None
 
     def _save_dataframe(self, node_id: str, df: Any) -> Optional[str]:
         """Write *df* to ``<artifact_dir>/<node_id>.parquet``."""
@@ -502,6 +525,15 @@ class DuckDBSQLiteBackend:
                 log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
                 return None
 
+        if mime_type == "application/x-pmprov-ui-alias+json":
+            try:
+                with open(content_ref, "r", encoding="utf-8") as f:
+                    alias_data = json.load(f)
+                return self.load_artifact(alias_data["parent_artifact_state_id"])
+            except Exception as e:
+                log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
+                return None
+
         # Future artifact types (process models, rulesets, etc.) would be handled here.
         raise NotImplementedError(
             f"load_artifact: no deserialiser implemented for mime_type='{mime_type}' "
@@ -538,11 +570,25 @@ class DuckDBSQLiteBackend:
             return None
 
     def load_output_artifact_state_id(self, output_state_id: str) -> Optional[str]:
-        """Return the artifact_state_id produced by the given output_state_id, or None."""
+        """Return the artifact_state_id this state's own step actually
+        produced (materialized new content here), or None.
+
+        Deliberately excludes alias rows (mime_type
+        'application/x-pmprov-ui-alias+json') -- those link an artifact this
+        state's step did NOT touch, carried forward for the "what's the
+        current artifact set" overview (see _link_untouched_artifacts in
+        runtime.py). Answering "does THIS state have its own materialized
+        artifact" must ignore them, or every state would look snapshotted.
+        """
         con = self._connect(read_only=True)
         try:
             row = con.execute(
-                "SELECT artifact_state_id FROM artifact_states WHERE analysis_state_id = ? LIMIT 1",
+                """
+                SELECT artifact_state_id FROM artifact_states
+                WHERE analysis_state_id = ?
+                  AND mime_type != 'application/x-pmprov-ui-alias+json'
+                LIMIT 1
+                """,
                 _p(output_state_id),
             ).fetchone()
             return row[0] if row else None
@@ -750,10 +796,14 @@ class DuckDBSQLiteBackend:
                 if not produced_by_step_id:
                     break  # reached the root — no step to record for it
 
+                # Excludes alias rows -- see load_output_artifact_state_id's
+                # docstring. A state only counts as "has_artifact" here if
+                # its own step actually materialized new content.
                 has_artifact = con.execute(
                     """
                     SELECT 1 FROM artifact_states
                     WHERE analysis_state_id = ? AND content_ref IS NOT NULL
+                      AND mime_type != 'application/x-pmprov-ui-alias+json'
                     LIMIT 1
                     """,
                     _p(current_id),
@@ -962,6 +1012,46 @@ class DuckDBSQLiteBackend:
         finally:
             con.close()
         return row[0] if row else None
+
+    def load_branch(self, branch_id: str) -> Optional[dict]:
+        """Return {branch_id, history_id, name, starts_at_state_id} for branch_id, or None."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT branch_id, history_id, name, starts_at_state_id FROM analysis_branches WHERE branch_id = ?",
+                _p(branch_id),
+            ).fetchone()
+        finally:
+            con.close()
+        if row is None:
+            return None
+        return {"branch_id": row[0], "history_id": row[1], "name": row[2], "starts_at_state_id": row[3]}
+
+    def load_child_steps(self, state_id: str) -> list[dict]:
+        """Return every AnalysisStep whose input_state_id is state_id — i.e. every
+        step that has already been executed starting from this exact state,
+        possibly on different branches. Used by the manual-branching model
+        (RuntimeTracker._resolve_input_state) to decide, after a checkout,
+        whether the next step re-treads an existing path or diverges from it.
+        """
+        con = self._connect(read_only=True)
+        try:
+            rows = con.execute(
+                """
+                SELECT s.step_id, s.func_name, s.output_state_id, st.branch_id, s.param_fingerprint
+                FROM analysis_steps s
+                JOIN analysis_states st ON st.state_id = s.output_state_id
+                WHERE s.input_state_id = ?
+                """,
+                _p(state_id),
+            ).fetchall()
+        finally:
+            con.close()
+        return [
+            {"step_id": r[0], "func_name": r[1], "output_state_id": r[2],
+             "branch_id": r[3], "param_fingerprint": r[4]}
+            for r in rows
+        ]
 
     def load_cell_executions(self, history_id: str) -> dict:
         """Rebuild the {func_name: [execution, ...]} shape RuntimeTracker._cell_executions

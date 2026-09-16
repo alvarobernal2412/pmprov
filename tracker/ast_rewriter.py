@@ -82,6 +82,7 @@ OMIT_FUNCTIONS: set[str] = {
     "step_category",
     "snapshot_policy",
     "snapshot_policy_for_type",
+    "set_default_snapshot_threshold",
     "omit_functions",
     "enable_logging",
     "get_logger",

@@ -38,7 +38,7 @@ dev = [
     "pre-commit==4.6.2",
     "networkx==3.6.1",
     "nbconvert==7.17.1",
-    "ipykernel==7.3.0",
+    "ipykernel==7.4.0",
 ]
 
 [build-system]

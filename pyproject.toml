@@ -37,7 +37,7 @@ dev = [
     "pytest-testmon==2.2.0",
     "pre-commit==4.6.2",
     "networkx==3.6.1",
-    "nbconvert==7.17.1",
+    "nbconvert==7.17.2",
     "ipykernel==7.3.0",
 ]
 

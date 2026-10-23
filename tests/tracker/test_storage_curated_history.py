@@ -69,11 +69,17 @@ def test_materialize_curated_history_creates_independent_history(rt, event_log):
         assert func_names == ["step1", "step2"]
 
         # Original artifact's content_ref is reused verbatim (no parquet duplication).
-        orig_content_ref = con.execute(
-            """SELECT ast.content_ref FROM artifact_states ast
-               WHERE ast.analysis_state_id = ?""",
-            _p(step1_output),
-        ).fetchone()
+        # A state can carry several artifact_states rows (its own parquet plus
+        # aliases for untouched artifacts), so pin the real data file explicitly.
+        orig_content_refs = [
+            r[0] for r in con.execute(
+                """SELECT ast.content_ref FROM artifact_states ast
+                   WHERE ast.analysis_state_id = ?""",
+                _p(step1_output),
+            ).fetchall()
+            if r[0].endswith(".parquet")
+        ]
+        assert len(orig_content_refs) == 1
         new_content_refs = [
             r[0] for r in con.execute(
                 """SELECT ast.content_ref FROM artifact_states ast
@@ -82,7 +88,7 @@ def test_materialize_curated_history_creates_independent_history(rt, event_log):
                 _p(new_history_id),
             ).fetchall()
         ]
-        assert orig_content_ref[0] in new_content_refs
+        assert orig_content_refs[0] in new_content_refs
     finally:
         con.close()
 

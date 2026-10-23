@@ -59,3 +59,42 @@ def test_update_annotation_unknown_id_raises(rt):
         rt.update_annotation("nope", "x")
 
 
+# ---- get_history / export_history -----------------------------------------
+
+def test_get_history_lists_events_in_order(rt, pipeline):
+    h = rt.get_history()
+
+    assert h["history"]["name"] == "test"
+    assert h["history"]["root_state_id"] == rt._root_state_id
+    assert [e["func_name"] for e in h["events"]] == ["load", "enrich", "more"]
+    assert [e["sequence"] for e in h["events"]] == [0, 1, 2]
+    assert [e["output_state_id"] for e in h["events"]] == pipeline
+    assert h["events"][1]["input_state_id"] == pipeline[0]
+    assert h["branches"][0]["name"] == "main"
+    json.dumps(h, default=str)  # serialisable
+
+
+def test_get_history_includes_annotations_and_tags(rt, pipeline):
+    rt.annotate([(AnnotatableType.ANALYSIS_STATE, pipeline[1])], "check this")
+    rt.tag(AnnotatableType.ANALYSIS_STATE, pipeline[1], "suspicious")
+
+    event = rt.get_history()["events"][1]
+
+    assert [a["text"] for a in event["state_notes"]["annotations"]] == ["check this"]
+    assert event["state_notes"]["tags"] == ["suspicious"]
+
+
+def test_export_history_json_and_jsonl(rt, pipeline, tmp_path):
+    p_json = rt.export_history(tmp_path / "out" / "h.json", format="json")
+    p_jsonl = rt.export_history(tmp_path / "h.jsonl", format="jsonl")
+
+    assert len(json.loads(p_json.read_text(encoding="utf-8"))["events"]) == 3
+    records = [json.loads(line) for line in p_jsonl.read_text(encoding="utf-8").splitlines()]
+    assert [r["type"] for r in records] == ["history", "branch", "event", "event", "event"]
+
+
+def test_export_history_rejects_unknown_format(rt, tmp_path):
+    with pytest.raises(ValueError):
+        rt.export_history(tmp_path / "h.xml", format="xml")
+
+

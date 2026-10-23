@@ -1258,6 +1258,53 @@ class DuckDBSQLiteBackend:
             con.close()
         return row[0] if row else None
 
+    def load_state_artifacts(self, state_id: str) -> list[dict]:
+        """
+        Every artifact linked to state_id (materialized or alias row), each with
+        the raw_line/timestamp of the step that first produced it.
+
+        Returns [{artifact_id, artifact_state_id, name, artifact_type,
+        origin_raw_line, origin_timestamp}], oldest origin first. The origin
+        fields are None when the artifact has no producing step on record.
+        """
+        con = self._connect(read_only=True)
+        try:
+            rows = con.execute(
+                """
+                SELECT ast.artifact_id, ast.artifact_state_id, a.name, a.artifact_type
+                FROM artifact_states ast
+                JOIN artifacts a ON a.artifact_id = ast.artifact_id
+                WHERE ast.analysis_state_id = ?
+                """,
+                _p(state_id),
+            ).fetchall()
+            results = []
+            for artifact_id, artifact_state_id, name, artifact_type in rows:
+                origin = con.execute(
+                    """
+                    SELECT s.raw_line, s.timestamp
+                    FROM artifact_states x
+                    JOIN analysis_steps s ON s.output_state_id = x.analysis_state_id
+                    WHERE x.artifact_id = ?
+                      AND x.mime_type != 'application/x-pmprov-ui-alias+json'
+                    ORDER BY s.timestamp
+                    LIMIT 1
+                    """,
+                    _p(artifact_id),
+                ).fetchone()
+                results.append({
+                    "artifact_id": artifact_id,
+                    "artifact_state_id": artifact_state_id,
+                    "name": name,
+                    "artifact_type": artifact_type,
+                    "origin_raw_line": origin[0] if origin else None,
+                    "origin_timestamp": origin[1] if origin else None,
+                })
+        finally:
+            con.close()
+        results.sort(key=lambda r: r["origin_timestamp"] or "")
+        return results
+
     def load_pipeline_by_name(self, name: str) -> Optional[str]:
         """Return the pipeline_id for the first pipeline with the given name, or None."""
         con = self._connect(read_only=True)

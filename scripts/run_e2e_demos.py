@@ -5,11 +5,10 @@ them errors at runtime. This exercises the real AST-rewriter + kernel-hook
 integration path (Jupyter's ast_transformers / Marimo's ast_compile patch), which
 unit tests that call RuntimeTracker.trace_step directly do not cover.
 
-Deliberately excludes examples/jupyter/acceptance_criteria_demo.ipynb and
-examples/marimo/acceptance_criteria_demo.py — both currently broken by pre-existing
-bugs unrelated to this script (see docs/claude/checklist.md). Do not add them to
-DEMOS below until those bugs are fixed; adding them here would turn CI red for a
-reason unrelated to whatever change triggered the run.
+Deliberately excludes examples/marimo/acceptance_criteria_demo.py — currently broken
+by pre-existing bugs unrelated to this script (see docs/claude/checklist.md). Do not
+add it to DEMOS below until those bugs are fixed; adding it here would turn CI red
+for a reason unrelated to whatever change triggered the run.
 
 Marimo demos get a second check beyond "did it render without error": `marimo
 export html` renders each cell but — confirmed by direct experiment — never
@@ -40,6 +39,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # db_path is only meaningful for kind == "marimo" (used by the tracking-activation check).
 DEMOS: list[tuple[str, str, str, str]] = [
     ("Jupyter: provenance_demo", "jupyter", "examples/jupyter/provenance_demo.ipynb", ""),
+    (
+        "Jupyter: acceptance_criteria_demo", "jupyter",
+        "examples/jupyter/acceptance_criteria_demo.ipynb", "",
+    ),
     (
         "Marimo: provenance_demo", "marimo", "examples/marimo/provenance_demo.py",
         "examples/marimo/provenance.db",

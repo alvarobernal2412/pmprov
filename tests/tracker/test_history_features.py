@@ -98,3 +98,49 @@ def test_export_history_rejects_unknown_format(rt, tmp_path):
         rt.export_history(tmp_path / "h.xml", format="xml")
 
 
+# ---- restore_state ---------------------------------------------------------
+
+def test_restore_latest_returns_named_variables(rt, pipeline):
+    restored = rt.restore_latest()
+
+    assert restored.state_id == pipeline[-1]
+    assert set(restored.variables) == {"event_log", "case_log", "case_log2"}
+    assert list(restored.variables["case_log2"].columns) == ["a", "b", "c"]
+    assert restored.skipped == []
+
+
+def test_restore_older_state_has_only_its_own_variables_content(rt, pipeline):
+    restored = rt.restore_state(pipeline[1])
+
+    assert list(restored.variables["case_log"].columns) == ["a", "b"]
+    assert "case_log2" not in restored.variables
+
+
+def test_restore_injects_into_namespace_without_touching_head(rt, pipeline):
+    namespace = {}
+    head = rt._current_state_id
+
+    rt.restore_state(pipeline[0], into=namespace)
+
+    assert "event_log" in namespace
+    assert rt._current_state_id == head
+
+
+def test_restore_with_checkout_moves_head(rt, pipeline):
+    rt.restore_state(pipeline[0], checkout=True)
+
+    assert rt._current_state_id == pipeline[0]
+
+
+def test_restore_unknown_state_raises(rt):
+    with pytest.raises(ValueError):
+        rt.restore_state("nope")
+
+
+def test_restore_does_not_record_new_steps(rt, pipeline):
+    rt.restore_latest()
+    settle(rt)
+
+    assert len(rt.get_history()["events"]) == 3
+
+

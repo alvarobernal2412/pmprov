@@ -360,11 +360,16 @@ class DuckDBSQLiteBackend:
                     con.execute("INSERT INTO deltas VALUES (?,?,?,?,?,?,?,?,?)",
                                 _p(str(uuid.uuid4()), new_step_id, *delta_row))
 
+                # A state may carry its own data file plus aliases to untouched
+                # artifacts (see _link_untouched_artifacts). Aliases resolve through
+                # the source history, so prefer the data-bearing row to keep the
+                # clone independent.
                 art_row = con.execute(
                     """SELECT a.name, a.artifact_type, ast.mime_type, ast.checksum,
                               ast.content_ref, ast.size_bytes
                        FROM artifact_states ast JOIN artifacts a ON a.artifact_id = ast.artifact_id
-                       WHERE ast.analysis_state_id = ?""",
+                       WHERE ast.analysis_state_id = ?
+                       ORDER BY ast.content_ref LIKE '%.ui_alias.json', ast.content_ref""",
                     _p(orig_output_state_id),
                 ).fetchone()
                 if art_row:

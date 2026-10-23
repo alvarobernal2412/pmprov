@@ -144,3 +144,60 @@ def test_restore_does_not_record_new_steps(rt, pipeline):
     assert len(rt.get_history()["events"]) == 3
 
 
+# ---- review mode ----------------------------------------------------------
+
+def test_review_walks_back_and_forward(rt, pipeline):
+    r = rt.review()
+
+    assert r.state_id == pipeline[-1] and not r.can_forward
+    assert r.back() and r.state_id == pipeline[1]
+    assert r.back() and r.state_id == pipeline[0]
+    assert r.back() and r.state_id == rt._root_state_id
+    assert not r.back()  # boundary: no raise
+    assert r.forward() and r.state_id == pipeline[0]
+    assert r.last() == pipeline[-1]
+    assert r.first() == rt._root_state_id
+    assert r.goto(pipeline[1]) == pipeline[1]
+
+
+def test_review_describe_and_restore_follow_cursor(rt, pipeline):
+    r = rt.review()
+    r.back()
+
+    assert r.describe()["func_name"] == "enrich"
+    assert list(r.restore().variables["case_log"].columns) == ["a", "b"]
+
+
+def test_review_never_changes_stored_history(rt, pipeline):
+    before = rt.get_history()
+    active_before = rt.storage.load_history(rt._history.history_id)["active_state_id"]
+    head = rt._current_state_id
+
+    r = rt.review()
+    r.back(); r.back(); r.forward(); r.first(); r.last(); r.restore()
+    settle(rt)
+
+    assert rt.get_history() == before
+    assert rt.storage.load_history(rt._history.history_id)["active_state_id"] == active_before
+    assert rt._current_state_id == head
+
+
+def test_review_follows_the_branch_of_the_target_state(rt, pipeline):
+    rt.checkout(pipeline[0], branch_name="alt")
+    df = rt.restore_state(pipeline[0]).variables["event_log"]
+    rt.trace_step(func=lambda d: d.assign(z=0), func_name="alt_step",
+                  raw_line="alt = alt_step(event_log)", args=[df], kwargs={})
+    alt_state = rt._current_state_id
+    settle(rt)
+
+    r = rt.review(alt_state)
+
+    assert r.path == [rt._root_state_id, pipeline[0], alt_state]
+    r.goto(pipeline[-1])  # jumps to the main branch path
+    assert r.path[-1] == pipeline[-1]
+    assert alt_state not in r.path
+
+
+def test_review_unknown_state_raises(rt, pipeline):
+    with pytest.raises(ValueError):
+        rt.review("nope")

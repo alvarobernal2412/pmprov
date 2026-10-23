@@ -249,6 +249,9 @@ class DuckDBSQLiteBackend:
     def remove_annotation_sync(self, annotation_id: str) -> None:
         self._executor.submit(self._delete_annotation, annotation_id).result()
 
+    def update_annotation_sync(self, annotation_id: str, text: str) -> bool:
+        return self._executor.submit(self._update_annotation, annotation_id, text).result()
+
     def remove_tag_assignment_sync(self, assignment_id: str) -> None:
         self._executor.submit(self._delete_tag_assignment, assignment_id).result()
 
@@ -1643,6 +1646,26 @@ class DuckDBSQLiteBackend:
             _commit(con)
         except Exception as e:
             log_storage_error(e, component="_delete_annotation", annotation_id=annotation_id)
+            raise
+        finally:
+            con.close()
+
+    def _update_annotation(self, annotation_id: str, text: str) -> bool:
+        """Replace an annotation's text. Returns False if annotation_id is unknown."""
+        con = self._connect()
+        try:
+            exists = con.execute(
+                "SELECT 1 FROM annotations WHERE annotation_id = ?", _p(annotation_id)
+            ).fetchone()
+            if exists is None:
+                return False
+            con.execute(
+                "UPDATE annotations SET text = ? WHERE annotation_id = ?", _p(text, annotation_id)
+            )
+            _commit(con)
+            return True
+        except Exception as e:
+            log_storage_error(e, component="_update_annotation", annotation_id=annotation_id)
             raise
         finally:
             con.close()

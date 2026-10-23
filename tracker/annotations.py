@@ -2,8 +2,8 @@
 Annotation and tag methods for RuntimeTracker.
 
 Imported as a side-effect from tracker/__init__.py.
-Patches annotate(), list_annotations(), remove_annotation(), tag(), list_tags(),
-untag() onto RuntimeTracker.
+Patches annotate(), list_annotations(), update_annotation(), remove_annotation(),
+tag(), list_tags(), untag() onto RuntimeTracker.
 """
 from __future__ import annotations
 
@@ -61,6 +61,12 @@ def _remove_annotation(self: "RuntimeTracker", annotation_id: str) -> None:
     self.storage.remove_annotation_sync(annotation_id)
 
 
+def _update_annotation(self: "RuntimeTracker", annotation_id: str, text: str) -> None:
+    """Replace the text of an existing annotation; targets, author and creation time are kept."""
+    if not self.storage.update_annotation_sync(annotation_id, text):
+        raise ValueError(f"update_annotation: unknown annotation_id {annotation_id!r}")
+
+
 def _tag(self: "RuntimeTracker", target_type: AnnotatableType, target_id: str, name: str) -> str:
     """
     Assign a short reusable label to an Annotatable object. Reuses the existing
@@ -98,6 +104,7 @@ from tracker.runtime import RuntimeTracker  # noqa: E402
 RuntimeTracker.annotate = _annotate
 RuntimeTracker.list_annotations = _list_annotations
 RuntimeTracker.remove_annotation = _remove_annotation
+RuntimeTracker.update_annotation = _update_annotation
 RuntimeTracker.tag = _tag
 RuntimeTracker.list_tags = _list_tags
 RuntimeTracker.untag = _untag

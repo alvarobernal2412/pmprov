@@ -58,6 +58,7 @@ import tracker.visualizations  # noqa: F401 — patches show_graph / show_graph_
 import tracker.introspection  # noqa: F401 — patches describe_state / list_branches onto RuntimeTracker
 import tracker.comparison  # noqa: F401 — patches compare_states / compare_histories onto RuntimeTracker
 import tracker.pruning  # noqa: F401 — patches build_pruned_view / save_pruned_view / load_pruned_view onto RuntimeTracker
+import tracker.history_export  # noqa: F401 — patches get_history / export_history onto RuntimeTracker
 import tracker.annotations  # noqa: F401 — patches annotate / tag / list_annotations / list_tags onto RuntimeTracker
 import tracker.ui_interactions  # noqa: F401 — patches trace_ui_step onto RuntimeTracker
 import tracker.observers  # noqa: F401 — patches on_step onto RuntimeTracker

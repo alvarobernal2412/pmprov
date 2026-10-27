@@ -15,7 +15,7 @@ Your cell code  →  AST rewriter  →  trace_step()  →  DuckDB/SQLite + Parqu
                    (transparent)     (non-blocking)
 ```
 
-Every top-level function call is intercepted at the AST level, wrapped with a lightweight tracer, and recorded as a node in a provenance tree. The analyst's variables contain exactly the same values they would without the middleware.
+Every top-level function call, plus the statements that change data without a call (`df['c'] = ...`, `x = df[mask]`, loops that update a frame), is intercepted at the AST level, wrapped with a lightweight tracer, and recorded as a node in a provenance tree. The analyst's variables contain exactly the same values they would without the middleware.
 
 ---
 

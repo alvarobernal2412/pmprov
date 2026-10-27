@@ -123,7 +123,7 @@ def _trace_ui_step(
     artifact_records: dict = {}
     artifact_path: Optional[str] = None
     if df is not None:
-        parent_artifact_state_id = self._artifact_state_registry.get(id(df))
+        parent_artifact_state_id = self._lookup_artifact_state(df)
         if parent_artifact_state_id:
             try:
                 artifact_path = self.storage.save_artifact(
@@ -168,6 +168,8 @@ def _trace_ui_step(
     # in runtime.py). df's own artifact was just aliased above; this covers
     # everything else the notebook has ever produced.
     self._link_untouched_artifacts(output_state_id, _touched_artifact_id)
+    # A UI interaction rebinds no variable: the state keeps the current bindings.
+    self.storage.save_state_bindings_async(output_state_id, self._bindings)
 
     self._cell_executions.setdefault(func_name, []).append({
         "input_state_id": input_state_id,

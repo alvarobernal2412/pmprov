@@ -40,6 +40,7 @@ import platform
 import sys
 import time
 import uuid
+import weakref
 from typing import Any, Optional
 
 from models import (
@@ -82,6 +83,88 @@ def _bound_name(raw_line: Optional[str]) -> Optional[str]:
     if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
         return node.targets[0].id
     return None
+
+
+def _bound_names(raw_line: Optional[str]) -> list[str]:
+    """Every name a single assignment line binds or mutates.
+
+    ``a = f()`` -> [a]; ``a, b = f()`` -> [a, b]; ``df['c'] = x`` -> [df]
+    (a subscript/attribute store mutates the object its root name refers to).
+    """
+    if not raw_line:
+        return []
+    try:
+        node = ast.parse(raw_line.strip()).body[0]
+    except (SyntaxError, IndexError):
+        return []
+    if not isinstance(node, ast.Assign):
+        return []
+    names: list[str] = []
+    for target in node.targets:
+        elts = target.elts if isinstance(target, (ast.Tuple, ast.List)) else [target]
+        for elt in elts:
+            while isinstance(elt, (ast.Subscript, ast.Attribute)):
+                elt = elt.value
+            if isinstance(elt, ast.Name) and elt.id not in names:
+                names.append(elt.id)
+    return names
+
+
+_FRAME_TYPES = ("DataFrame", "Series")
+
+
+def _lead_frame(func: Any, root: Any) -> Any:
+    """The DataFrame a call operates on: its root name, bound receiver, or a GroupBy's frame."""
+    for candidate in (root, getattr(func, "__self__", None)):
+        if candidate is None:
+            continue
+        if type(candidate).__name__ == "DataFrame":
+            return candidate
+        inner = getattr(candidate, "obj", None)  # DataFrameGroupBy keeps its frame here
+        if type(inner).__name__ == "DataFrame":
+            return inner
+    return None
+
+
+def _is_storable(obj: Any) -> bool:
+    """Objects worth pickling as an artifact: data and models, not code or handles."""
+    import io
+    import types
+
+    return obj is not None and not isinstance(
+        obj, (types.ModuleType, types.FunctionType, types.BuiltinFunctionType, types.MethodType,
+              types.GeneratorType, type, io.IOBase)
+    )
+
+
+def _is_row_subset(parent: Any, child: Any) -> bool:
+    """True when *child* is *parent* restricted to some of its rows, by label.
+
+    A filter-index artifact stores only the child's index labels and rebuilds
+    it as ``parent.loc[labels]``; that is exact only when labels are unique,
+    all come from the parent and select identical rows (a ``reset_index`` or a
+    value change would not).
+    """
+    try:
+        if not (child.index.is_unique and parent.index.is_unique and child.index.isin(parent.index).all()):
+            return False
+        head = child.index[:3]
+        return bool(parent.loc[head].equals(child.iloc[:3]))
+    except Exception:
+        return False
+
+
+def _jsonable(value: Any, _depth: int = 0) -> Any:
+    """*value* with everything JSON cannot hold (types, objects) replaced by its text."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if _depth < 4 and isinstance(value, (list, tuple)):
+        return [_jsonable(v, _depth + 1) for v in value]
+    if _depth < 4 and isinstance(value, dict):
+        return {str(k): _jsonable(v, _depth + 1) for k, v in value.items()}
+    if type(value).__name__ in _FRAME_TYPES:
+        return f"<{type(value).__name__} {'x'.join(str(n) for n in value.shape)}>"
+    return getattr(value, "__qualname__", None) or str(value)[:150]
 
 
 def _uid() -> str:
@@ -209,6 +292,8 @@ class RuntimeTracker:
         # Artifact identity registries (scoped to this session)
         self._artifact_registry: dict[int, str] = {}
         self._artifact_state_registry: dict[int, str] = {}
+        self._registered_refs: dict[int, Any] = {}  # id -> weakref, to tell a live object from a reused id
+        self._block_pre: dict[str, dict] = {}  # raw_line -> pre-loop snapshots (see begin_block)
         # artifact_id -> latest artifact_state_id, across ALL tracked artifacts
         # (not keyed by Python object identity like the two above) -- lets
         # every new AnalysisState link the complete current artifact set, not
@@ -310,6 +395,8 @@ class RuntimeTracker:
 
         self._artifact_registry = {}
         self._artifact_state_registry = {}
+        self._registered_refs = {}
+        self._block_pre = {}
         self._artifact_id_to_latest_state = {}
         self._bindings = {}
         self._operation_cache = {}
@@ -402,21 +489,50 @@ class RuntimeTracker:
         raw_line: str,
         args: list,
         kwargs: dict,
+        targets: Optional[list[str]] = None,
+        root: Any = None,
+        named_outputs: bool = False,
+        root_name: Optional[str] = None,
     ) -> Any:
         """
         Execute ``func(*args, **kwargs)``, capture provenance, and return the
         unmodified result.  Telemetry failures are isolated so they never
         prevent user code from completing.
+
+        targets:
+            Names the statement binds or mutates (the rewriter passes them;
+            parsed from *raw_line* when absent). Several names split a
+            tuple result into one artifact each.
+        root:
+            The object the call chain starts from (``df`` in
+            ``df.groupby(k).agg(...)``), so a method call's delta is measured
+            on the frame it transforms.
+        root_name:
+            Name of *root* in the notebook; a bare method call that returns
+            the root itself, or nothing at all, has changed that variable.
+        named_outputs:
+            *func* returned ``{name: object}`` (a loop block): every entry is
+            an output of the one step.
         """
         # ---- 0. Runtime omit check ------------------------------------------
         # The AST rewriter filters omitted calls at compile time, but a stale
         # transformer instance (registered before an omit-list update or a
         # code reload) may still route calls here.  This gate ensures omitted
         # functions are NEVER tracked regardless of transformer state.
-        if _is_omitted(func_name):
+        names = list(targets) if targets is not None else _bound_names(raw_line)
+        if _is_omitted(func_name, bound=bool(names)):
+            return func(*args, **kwargs)
+        # Subscript/attribute helpers only mean something on frames; on a
+        # dict, list or array the statement runs as plain Python.
+        if getattr(func, "_provtrack_frames_only", False) and not (
+            args and type(args[0]).__name__ in _FRAME_TYPES
+        ):
             return func(*args, **kwargs)
 
         # ---- 1. Pre-snapshots ------------------------------------------------
+        lead = _lead_frame(func, root)
+        lead_pre = capture_snapshot(lead) if lead is not None else None
+        block_pre = self._block_pre.pop(raw_line, None) if named_outputs else None
         pre_snaps: dict[str, dict] = {}
         for i, a in enumerate(args):
             pre_snaps[f"arg_{i}"] = capture_snapshot(a)
@@ -428,6 +544,20 @@ class RuntimeTracker:
         output = func(*args, **kwargs)
         _elapsed_seconds = time.perf_counter() - _call_start
         self._replay_func_registry[func_name] = func
+        if output is None and kwargs.get("inplace") is True:
+            # df.sort_values(..., inplace=True) returns None; the result is the receiver.
+            receiver = getattr(func, "__self__", None)
+            output = receiver if type(receiver).__name__ in _FRAME_TYPES else lead
+
+        if (
+            not names and root_name and root is not None and type(root).__name__ not in _FRAME_TYPES
+            and (output is root or (output is None and root_name in self._bindings))
+            and _is_storable(root)
+        ):
+            # estimator.fit(...) / fig.update_layout(...): the method changed
+            # the object a variable refers to, so that variable has a new value.
+            names = [root_name]
+            output = root
 
         # ---- 3. Post-snapshots -----------------------------------------------
         try:
@@ -445,13 +575,17 @@ class RuntimeTracker:
         # ---- 4. Delta --------------------------------------------------------
         delta: dict = {}
         try:
-            first_pre = next(
+            first_pre = None if getattr(func, "_provtrack_no_delta", False) else lead_pre or next(
                 (v for v in pre_snaps.values() if v.get("kind") not in ("other", None)),
                 None,
             )
-            if first_pre and post_snap:
+            if named_outputs and isinstance(output, dict) and output:
+                first_name, first_obj = next(iter(output.items()))
+                if block_pre and first_name in block_pre:
+                    delta = compute_delta(block_pre[first_name], capture_snapshot(first_obj))
+            elif first_pre and post_snap:
                 delta = compute_delta(first_pre, post_snap)
-            elif first_pre:
+            elif first_pre and pre_snaps:
                 first_key = next(iter(pre_snaps))
                 delta = compute_delta(first_pre, post_input_snaps.get(first_key, {}))
         except Exception as e:
@@ -469,7 +603,7 @@ class RuntimeTracker:
         # ArtifactStateParameterValue (enabling replay_state to reconstruct them).
         try:
             for a in list(args) + list(kwargs.values()):
-                if type(a).__name__ == "DataFrame" and id(a) not in self._artifact_state_registry:
+                if type(a).__name__ == "DataFrame" and self._lookup_artifact_state(a) is None:
                     _input_state_id = _uid()
                     _input_path = self.storage.save_artifact(_input_state_id, a)
                     if _input_path:
@@ -499,18 +633,24 @@ class RuntimeTracker:
                 # If inspection fails, fall back to positional names for args
                 param_names = [f"arg_{i}" for i in range(len(args))]
 
+            def _add_param(param_id: str, value: Any) -> None:
+                # One unserialisable parameter must not drop the step's others.
+                try:
+                    param_values.append(self._make_param_value(param_id, step_id, value).model_dump(mode="json"))
+                except Exception as e:
+                    log_trace_warning("parameter value serialisation failed",
+                                      step="param_values", func_name=func_name, param=param_id, error=e)
+
             for i, a in enumerate(args):
                 param_name = param_names[i] if i < len(param_names) else f"arg_{i}"
-                pv = self._make_param_value(f"{func_name}:{param_name}", step_id, a)
-                param_values.append(pv.model_dump(mode="json"))
+                _add_param(f"{func_name}:{param_name}", a)
             for k, v in kwargs.items():
-                pv = self._make_param_value(f"{func_name}:{k}", step_id, v)
-                param_values.append(pv.model_dump(mode="json"))
+                _add_param(f"{func_name}:{k}", v)
             # For bound methods (e.g. case_log.apply(...)), record the receiver object
             # so replay can reconstruct the method call without losing the DataFrame target.
             if hasattr(func, "__self__") and func.__self__ is not None:
                 receiver = func.__self__
-                if type(receiver).__name__ == "DataFrame" and id(receiver) not in self._artifact_state_registry:
+                if type(receiver).__name__ == "DataFrame" and self._lookup_artifact_state(receiver) is None:
                     _recv_state_id = _uid()
                     _recv_path = self.storage.save_artifact(_recv_state_id, receiver)
                     if _recv_path:
@@ -525,8 +665,7 @@ class RuntimeTracker:
                         except Exception as e:
                             log_trace_warning("receiver artifact record build failed",
                                               step="receiver_artifact", func_name=func_name, error=e)
-                pv = self._make_param_value(f"{func_name}:__receiver__", step_id, receiver)
-                param_values.append(pv.model_dump(mode="json"))
+                _add_param(f"{func_name}:__receiver__", receiver)
         except Exception as e:
             log_trace_warning("parameter value serialisation failed",
                               step="param_values", func_name=func_name, error=e)
@@ -557,41 +696,22 @@ class RuntimeTracker:
         )
 
         # ---- 7. Artifact persistence -----------------------------------------
-        artifact_records: dict = {}
-        artifact_path: Optional[str] = None
-        _artifact_kind = post_snap.get("kind")
-        if (
-            _artifact_kind in {"dataframe", "figure"}
-            and output is not None
-            and should_snapshot(func_name, op_type.name, elapsed_seconds=_elapsed_seconds)
-        ):
-            try:
-                if _artifact_kind == "dataframe":
-                    _pre = pre_snaps.get("arg_0", {})
-                    if _is_row_filter(_pre, post_snap):
-                        _artifact_kind = "filter_index"
-                # For filter_index: pass the parent's artifact_state_id directly so
-                # load_artifact can reconstruct the filtered DataFrame without a join.
-                _parent_ast_id = ""
-                if _artifact_kind == "filter_index":
-                    _first_df_arg = next(
-                        (a for a in args if type(a).__name__ == "DataFrame"), None
-                    )
-                    if _first_df_arg is not None:
-                        _parent_ast_id = self._artifact_state_registry.get(id(_first_df_arg), "")
-                artifact_path = self.storage.save_artifact(
-                    output_state_id, output, kind=_artifact_kind,
-                    parent_state_id=input_state_id,
-                    parent_artifact_state_id=_parent_ast_id,
+        # One artifact per output: a tuple result bound to several names, or a
+        # loop block that changed several frames, stores each separately.
+        outputs = self._split_outputs(output, names, named_outputs)
+        persisted: list[tuple[Optional[str], dict]] = []  # (name, artifact records)
+        if should_snapshot(func_name, op_type.name, elapsed_seconds=_elapsed_seconds):
+            for index, (out_name, out_obj) in enumerate(outputs):
+                records = self._persist_output(
+                    out_obj,
+                    node_id=output_state_id if index == 0 else _uid(),
+                    input_state_id=input_state_id,
+                    parent_pre=lead_pre or pre_snaps.get("arg_0", {}),
+                    parent_frame=next((a for a in args if type(a).__name__ == "DataFrame"), None),
+                    func_name=func_name,
                 )
-                if artifact_path:
-                    artifact_records = self._build_artifact_records(
-                        output, output_state_id, artifact_path
-                    )
-            except Exception as e:
-                log_trace_warning("output artifact persistence failed",
-                                  step="output_artifact", func_name=func_name, error=e)
-                artifact_path = None
+                if records:
+                    persisted.append((out_name, records))
 
         # ---- 8. Persist all entities ------------------------------------------------
         output_state = AnalysisState(
@@ -608,20 +728,26 @@ class RuntimeTracker:
             self.storage.save_param_values_async(param_values)
         if delta:
             self.storage.save_delta_async(delta, step_id)
-        _touched_artifact_id = None
-        if artifact_path:
-            artifact_state_obj = artifact_records.get("artifact_state_obj")
-            if artifact_state_obj:
-                self.storage.save_artifact_records_async(
-                    artifact_records.get("artifact_obj"), artifact_state_obj, self._history.history_id
-                )
-                _touched_artifact_id = artifact_state_obj.artifact_id
-                _name = _bound_name(raw_line) or f"dataframe_{_touched_artifact_id[:8]}"
-                self._bindings[_name] = artifact_state_obj.artifact_state_id
+        touched: set[str] = set()
+        persisted_names: set[str] = set()
+        for out_name, records in persisted:
+            artifact_state_obj = records["artifact_state_obj"]
+            self.storage.save_artifact_records_async(
+                records.get("artifact_obj"), artifact_state_obj, self._history.history_id
+            )
+            touched.add(artifact_state_obj.artifact_id)
+            label = out_name or f"{records['label']}_{artifact_state_obj.artifact_id[:8]}"
+            self._bindings[label] = artifact_state_obj.artifact_state_id
+            persisted_names.add(label)
+        # A name rebound to something that was not stored must not keep
+        # pointing at its previous value.
+        for out_name, _ in outputs:
+            if out_name and out_name not in persisted_names:
+                self._bindings.pop(out_name, None)
         # Every state is a complete snapshot of the artifact set: link every
         # OTHER already-known artifact forward to this state too, aliased
         # rather than re-persisted (see _link_untouched_artifacts).
-        self._link_untouched_artifacts(output_state_id, _touched_artifact_id)
+        self._link_untouched_artifacts(output_state_id, touched)
         self.storage.save_state_bindings_async(output_state_id, self._bindings)
 
         # Record this execution for future divergence checks on this func.
@@ -643,6 +769,15 @@ class RuntimeTracker:
         )
 
         return output
+
+    def begin_block(self, raw_line: str, names: list[str], namespace: dict) -> None:
+        """Remember the metadata of the frames a loop is about to change, for its delta."""
+        pre = {}
+        for name in names:
+            value = namespace.get(name)
+            if type(value).__name__ in _FRAME_TYPES:
+                pre[name] = capture_snapshot(value)
+        self._block_pre[raw_line] = pre
 
     def checkout(self, state_id: str, branch_name: Optional[str] = None) -> None:
         """
@@ -848,37 +983,102 @@ class RuntimeTracker:
         self._operation_cache[func_name] = (operation, op_type, step_cat)
         return operation, op_type, step_cat
 
+    def _lookup_artifact_state(self, obj: Any) -> Optional[str]:
+        """artifact_state_id last recorded for *obj* itself (not for a dead object that had its id)."""
+        ast_id = self._artifact_state_registry.get(id(obj))
+        if ast_id is None:
+            return None
+        ref = self._registered_refs.get(id(obj))
+        return ast_id if ref is not None and ref() is obj else None
+
+    def _split_outputs(self, output: Any, names: list[str], named: bool) -> list[tuple[Optional[str], Any]]:
+        """Pair a step's result with the names it was bound to."""
+        if named:  # a loop block: {name: object}
+            return [(n, o) for n, o in output.items()] if isinstance(output, dict) else []
+        if len(names) > 1 and isinstance(output, (tuple, list)) and len(output) == len(names):
+            return list(zip(names, output))
+        return [(names[0] if len(names) == 1 else None, output)]
+
+    def _persist_output(
+        self, obj: Any, *, node_id: str, input_state_id: str, parent_pre: dict,
+        parent_frame: Any, func_name: str,
+    ) -> Optional[dict]:
+        """Store *obj* as an artifact; return its records (plus a ``label``) or None."""
+        if obj is None:
+            return None
+        try:
+            kind = capture_snapshot(obj).get("kind")
+            parent_ast_id = ""
+            if kind == "dataframe":
+                post = capture_snapshot(obj)
+                if _is_row_filter(parent_pre, post) and parent_frame is not None and _is_row_subset(parent_frame, obj):
+                    parent_ast_id = self._lookup_artifact_state(parent_frame) or ""
+                    if parent_ast_id:
+                        kind = "filter_index"
+                label = "dataframe"
+            elif kind == "figure":
+                label = "dataframe"
+            elif _is_storable(obj):
+                kind, label = "pickle", "object"
+            else:
+                return None
+            path = self.storage.save_artifact(
+                node_id, obj, kind=kind,
+                parent_state_id=input_state_id,
+                parent_artifact_state_id=parent_ast_id,
+            )
+            if not path:
+                return None
+            records = self._build_artifact_records(obj, node_id, path, label=label)
+            records["label"] = label
+            return records if records.get("artifact_state_obj") else None
+        except Exception as e:
+            log_trace_warning("output artifact persistence failed",
+                              step="output_artifact", func_name=func_name, error=e)
+            return None
+
     def _build_artifact_records(
         self,
         obj: Any,
         output_state_id: str,
         artifact_path: str,
+        label: str = "dataframe",
     ) -> dict:
         """
-        Build Artifact + ArtifactState Pydantic models for a DataFrame or Figure output.
+        Build Artifact + ArtifactState Pydantic models for an output.
 
         Returns a dict with keys ``artifact_obj`` (None if already seen) and
         ``artifact_state_obj``.
-        Side effects: updates _artifact_registry and _artifact_state_registry.
+        Side effects: updates _artifact_registry and _artifact_state_registry
+        for frames and figures (mutable objects that keep an identity across
+        steps); other outputs are always a new artifact.
         """
         obj_python_id = id(obj)
         checksum_hex, size_bytes = _checksum_and_size(artifact_path)
+        tracked = type(obj).__name__ in ("DataFrame", "Figure")
 
         artifact: Optional[Artifact] = None
-        artifact_id = self._artifact_registry.get(obj_python_id)
+        artifact_id = None
+        if tracked:
+            ref = self._registered_refs.get(obj_python_id)
+            if ref is not None and ref() is obj:  # not a dead object whose id was reused
+                artifact_id = self._artifact_registry.get(obj_python_id)
         if artifact_id is None:
             artifact_id = _uid()
             artifact = Artifact(
                 artifact_id=artifact_id,
-                name=f"dataframe_{artifact_id[:8]}",
+                name=f"{label}_{artifact_id[:8]}",
                 artifact_type=_infer_artifact_type(obj),
             )
-            self._artifact_registry[obj_python_id] = artifact_id
+            if tracked:
+                self._artifact_registry[obj_python_id] = artifact_id
 
         if artifact_path.endswith(".plotly.json"):
             mime_type = "application/vnd.plotly.v1+json"
         elif artifact_path.endswith(".filter.json"):
             mime_type = "application/x-pmprov-filter-index+json"
+        elif artifact_path.endswith(".pkl"):
+            mime_type = "application/x-pmprov-pickle"
         elif artifact_path.endswith(".ui_alias.json"):
             mime_type = "application/x-pmprov-ui-alias+json"
         else:
@@ -893,12 +1093,17 @@ class RuntimeTracker:
             content_ref=artifact_path,
             size_bytes=size_bytes,
         )
-        self._artifact_state_registry[obj_python_id] = artifact_state.artifact_state_id
+        if tracked:
+            self._artifact_state_registry[obj_python_id] = artifact_state.artifact_state_id
+            try:
+                self._registered_refs[obj_python_id] = weakref.ref(obj)
+            except TypeError:
+                self._registered_refs.pop(obj_python_id, None)
         self._artifact_id_to_latest_state[artifact_id] = artifact_state.artifact_state_id
         return {"artifact_obj": artifact, "artifact_state_obj": artifact_state}
 
     def _link_untouched_artifacts(
-        self, output_state_id: str, touched_artifact_id: Optional[str] = None,
+        self, output_state_id: str, touched_artifact_id: Any = None,
     ) -> None:
         """
         Every AnalysisState is meant to be a complete snapshot of the current
@@ -918,7 +1123,9 @@ class RuntimeTracker:
         far cheaper than re-persisting full Parquet content, but not O(1).
         """
         for artifact_id, latest_state_id in list(self._artifact_id_to_latest_state.items()):
-            if artifact_id == touched_artifact_id:
+            if artifact_id == touched_artifact_id or (
+                isinstance(touched_artifact_id, (set, frozenset)) and artifact_id in touched_artifact_id
+            ):
                 continue
             try:
                 alias_path = self.storage.save_artifact(
@@ -946,7 +1153,7 @@ class RuntimeTracker:
     def _make_param_value(self, param_id: str, step_id: str, value: Any):
         """Map a runtime Python value to the appropriate ParameterValue subclass."""
         if type(value).__name__ == "DataFrame":
-            ast_id = self._artifact_state_registry.get(id(value))
+            ast_id = self._lookup_artifact_state(value)
             if ast_id:
                 return ArtifactStateParameterValue(
                     parameter_value_id=_uid(),
@@ -975,14 +1182,14 @@ class RuntimeTracker:
                 parameter_value_id=_uid(),
                 parameter_id=param_id,
                 step_id=step_id,
-                value=value[:50],
+                value=_jsonable(value[:50]),
             )
         if isinstance(value, dict):
             return DictParameterValue(
                 parameter_value_id=_uid(),
                 parameter_id=param_id,
                 step_id=step_id,
-                value={k: v for k, v in list(value.items())[:50]},
+                value={str(k): _jsonable(v) for k, v in list(value.items())[:50]},
             )
         return ScalarParameterValue(
             parameter_value_id=_uid(),

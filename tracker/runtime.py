@@ -31,6 +31,7 @@ Two cases trigger the creation of a new AnalysisBranch:
 
 from __future__ import annotations
 
+import ast
 import getpass
 import hashlib
 import inspect
@@ -68,6 +69,19 @@ from tracker.operation_registry import lookup as _lookup_operation_type, lookup_
 from tracker.snapshot_engine import capture_snapshot
 from tracker.snapshot_policy import should_snapshot
 from tracker.storage import StorageBackend
+
+
+def _bound_name(raw_line: Optional[str]) -> Optional[str]:
+    """Name bound by a single-target ``name = call(...)`` line, else None."""
+    if not raw_line:
+        return None
+    try:
+        node = ast.parse(raw_line.strip()).body[0]
+    except (SyntaxError, IndexError):
+        return None
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        return node.targets[0].id
+    return None
 
 
 def _uid() -> str:
@@ -201,6 +215,9 @@ class RuntimeTracker:
         # just whatever this one step happened to touch. See
         # _link_untouched_artifacts().
         self._artifact_id_to_latest_state: dict[str, str] = {}
+        # variable name -> artifact_state_id as of the current state; persisted
+        # per state so restore_state() never re-derives names or lineage.
+        self._bindings: dict[str, str] = {}
 
         # Operation cache: func_name → (Operation, OperationType)
         self._operation_cache: dict[str, tuple[Operation, OperationType]] = {}
@@ -294,6 +311,7 @@ class RuntimeTracker:
         self._artifact_registry = {}
         self._artifact_state_registry = {}
         self._artifact_id_to_latest_state = {}
+        self._bindings = {}
         self._operation_cache = {}
         self._abstraction_registry = {}
         self._abstraction_cache = {}
@@ -327,6 +345,7 @@ class RuntimeTracker:
         )
 
         self._cell_executions = storage.load_cell_executions(history_id)
+        self._bindings = storage.load_state_bindings(self._current_state_id)
         self._pending_checkout_state_id = None
         self._pending_checkout_branch_name = None
         self._step_observers = []
@@ -597,10 +616,13 @@ class RuntimeTracker:
                     artifact_records.get("artifact_obj"), artifact_state_obj, self._history.history_id
                 )
                 _touched_artifact_id = artifact_state_obj.artifact_id
+                _name = _bound_name(raw_line) or f"dataframe_{_touched_artifact_id[:8]}"
+                self._bindings[_name] = artifact_state_obj.artifact_state_id
         # Every state is a complete snapshot of the artifact set: link every
         # OTHER already-known artifact forward to this state too, aliased
         # rather than re-persisted (see _link_untouched_artifacts).
         self._link_untouched_artifacts(output_state_id, _touched_artifact_id)
+        self.storage.save_state_bindings_async(output_state_id, self._bindings)
 
         # Record this execution for future divergence checks on this func.
         self._cell_executions.setdefault(func_name, []).append({
@@ -672,6 +694,7 @@ class RuntimeTracker:
             starts_at_state_id=branch_row["starts_at_state_id"],
         )
         self._current_state_id = state_id
+        self._bindings = self.storage.load_state_bindings(state_id)
         self._pending_checkout_state_id = state_id
         self._pending_checkout_branch_name = branch_name
         # active_state_id reflects where the analyst is now — the checkout point.

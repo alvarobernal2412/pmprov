@@ -66,8 +66,11 @@ class _NoOpRuntime:  # noqa: E302
     ``init_marimo()`` has been called (e.g. path-setup calls in the init cell
     itself that happen before the tracker is created).
     """
-    def trace_step(self, *, func, func_name, raw_line, args, kwargs):
+    def trace_step(self, *, func, func_name, raw_line, args, kwargs, **_ignored):
         return func(*args, **kwargs)
+
+    def begin_block(self, raw_line, names, namespace):
+        return None
 
 
 # Initialise _runtime to the no-op now that the class is defined.

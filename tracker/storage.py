@@ -12,6 +12,7 @@ referenced by path from the metadata DB.
 from __future__ import annotations
 
 import json
+import pickle
 import uuid
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -122,6 +123,23 @@ CREATE TABLE IF NOT EXISTS state_bindings (state_id VARCHAR NOT NULL, name VARCH
 CREATE TABLE IF NOT EXISTS tags (tag_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS tag_assignments (assignment_id VARCHAR PRIMARY KEY, tag_id VARCHAR NOT NULL, target_type VARCHAR NOT NULL, target_id VARCHAR NOT NULL, created_at VARCHAR NOT NULL);
 """
+
+
+def _parquet_would_change_dtypes(df: Any) -> bool:
+    """True when a Parquet round trip would not give back *df* exactly.
+
+    An object column holding only bools, ints or floats comes back as
+    bool/int64/float64; the exact frame is kept as a pickle instead.
+    """
+    try:
+        import pandas as pd
+        return any(
+            df[c].dtype == object
+            and pd.api.types.infer_dtype(df[c], skipna=True) in ("boolean", "integer", "floating", "mixed-integer-float", "complex")
+            for c in df.columns
+        )
+    except Exception:
+        return False
 
 
 class DuckDBSQLiteBackend:
@@ -412,6 +430,8 @@ class DuckDBSQLiteBackend:
         """Persist *obj* to disk. Returns the file path, or None on failure."""
         if kind == "figure":
             return self._save_plotly_figure(node_id, obj)
+        if kind == "pickle":
+            return self._save_pickle(node_id, obj)
         if kind == "filter_index":
             return self._save_filter_index(node_id, obj, parent_state_id,
                                            parent_artifact_state_id=parent_artifact_state_id)
@@ -447,11 +467,32 @@ class DuckDBSQLiteBackend:
             module = type(df).__module__ or ""
             if "polars" in module:
                 df.write_parquet(str(path))
+            elif _parquet_would_change_dtypes(df):
+                path.unlink(missing_ok=True)
+                return self._save_pickle(node_id, df)
             else:
                 df.to_parquet(str(path))
             return str(path)
         except Exception as e:
-            log_storage_error(e, component="save_artifact", node_id=node_id)
+            # Parquet needs one type per column (an int next to a str in an
+            # object column is rejected); keep the exact frame as a pickle
+            # instead of recording a step that has no artifact.
+            log_storage_error(e, component="save_artifact", node_id=node_id,
+                              note="Parquet write failed; falling back to pickle")
+            path.unlink(missing_ok=True)
+            return self._save_pickle(node_id, df)
+
+    def _save_pickle(self, node_id: str, obj: Any) -> Optional[str]:
+        """Write *obj* to ``<artifact_dir>/<node_id>.pkl`` (Series, scalars, models, ...)."""
+        path = self.artifact_dir / f"{node_id}.pkl"
+        try:
+            with open(str(path), "wb") as f:
+                pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+            return str(path)
+        except Exception as e:
+            log_storage_error(e, component="_save_pickle", node_id=node_id,
+                              note=f"{type(obj).__name__} cannot be pickled; no artifact stored")
+            path.unlink(missing_ok=True)
             return None
 
     def _save_plotly_figure(self, node_id: str, fig: Any) -> Optional[str]:
@@ -516,6 +557,23 @@ class DuckDBSQLiteBackend:
                 log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
                 return None
 
+        if mime_type == "application/x-pmprov-pickle":
+            try:
+                with open(content_ref, "rb") as f:
+                    return pickle.load(f)
+            except Exception as e:
+                log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
+                return None
+
+        if mime_type == "application/vnd.plotly.v1+json":
+            try:
+                import plotly.io as pio
+                with open(content_ref, "r", encoding="utf-8") as f:
+                    return pio.from_json(f.read())
+            except Exception as e:
+                log_storage_error(e, component="load_artifact", artifact_state_id=artifact_state_id)
+                return None
+
         if mime_type == "application/x-pmprov-filter-index+json":
             try:
                 with open(content_ref, "r", encoding="utf-8") as f:
@@ -563,6 +621,9 @@ class DuckDBSQLiteBackend:
             if path.endswith(".filter.json"):
                 with open(path, "r", encoding="utf-8") as f:
                     return json.load(f)
+            if path.endswith(".pkl"):
+                with open(path, "rb") as f:
+                    return pickle.load(f)
             import pandas as pd
             return pd.read_parquet(path)
         except Exception as e:

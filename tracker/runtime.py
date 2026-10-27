@@ -36,6 +36,7 @@ import getpass
 import hashlib
 import inspect
 import json
+import pickle
 import platform
 import sys
 import time
@@ -152,6 +153,32 @@ def _is_row_subset(parent: Any, child: Any) -> bool:
         return bool(parent.loc[head].equals(child.iloc[:3]))
     except Exception:
         return False
+
+
+# Objects whose pickle is larger than this are not re-checked for changes after
+# every step (see RuntimeTracker._refresh_tracked).
+_MAX_FINGERPRINT_BYTES = 5_000_000
+_IMMUTABLE_TYPES = (int, float, complex, str, bytes, bool, type(None))
+
+
+def _fingerprint(obj: Any) -> Optional[str]:
+    """A cheap summary that changes when *obj* changes; None when it cannot or need not be tracked.
+
+    Frames and Series: shape, columns and dtypes (a value edited in place that
+    keeps all three is not noticed). Other objects: a hash of their pickle,
+    skipped above _MAX_FINGERPRINT_BYTES. Immutable values never change.
+    """
+    if isinstance(obj, _IMMUTABLE_TYPES):
+        return None
+    if type(obj).__name__ in _FRAME_TYPES:
+        snap = capture_snapshot(obj)
+        snap.pop("object_id", None)
+        return json.dumps(snap, sort_keys=True, default=str)
+    try:
+        data = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        return None
+    return hashlib.md5(data).hexdigest() if len(data) <= _MAX_FINGERPRINT_BYTES else None
 
 
 def _jsonable(value: Any, _depth: int = 0) -> Any:
@@ -294,6 +321,8 @@ class RuntimeTracker:
         self._artifact_state_registry: dict[int, str] = {}
         self._registered_refs: dict[int, Any] = {}  # id -> weakref, to tell a live object from a reused id
         self._block_pre: dict[str, dict] = {}  # raw_line -> pre-loop snapshots (see begin_block)
+        # name -> (ref to the object, fingerprint) for every bound variable that can change
+        self._tracked: dict[str, tuple[Any, str]] = {}
         # artifact_id -> latest artifact_state_id, across ALL tracked artifacts
         # (not keyed by Python object identity like the two above) -- lets
         # every new AnalysisState link the complete current artifact set, not
@@ -397,6 +426,7 @@ class RuntimeTracker:
         self._artifact_state_registry = {}
         self._registered_refs = {}
         self._block_pre = {}
+        self._tracked = {}
         self._artifact_id_to_latest_state = {}
         self._bindings = {}
         self._operation_cache = {}
@@ -700,7 +730,10 @@ class RuntimeTracker:
         # loop block that changed several frames, stores each separately.
         outputs = self._split_outputs(output, names, named_outputs)
         persisted: list[tuple[Optional[str], dict]] = []  # (name, artifact records)
-        if should_snapshot(func_name, op_type.name, elapsed_seconds=_elapsed_seconds):
+        alias_of: Optional[str] = None  # df2 = df: the version df2 shares, when df already has one
+        if getattr(func, "_provtrack_alias", False) and outputs and outputs[0][0]:
+            alias_of = self._lookup_artifact_state(outputs[0][1])
+        if alias_of is None and should_snapshot(func_name, op_type.name, elapsed_seconds=_elapsed_seconds):
             for index, (out_name, out_obj) in enumerate(outputs):
                 records = self._persist_output(
                     out_obj,
@@ -730,6 +763,14 @@ class RuntimeTracker:
             self.storage.save_delta_async(delta, step_id)
         touched: set[str] = set()
         persisted_names: set[str] = set()
+        stored_now: dict[int, str] = {}  # id(object) -> artifact_state_id stored or bound in this step
+        if alias_of is not None:
+            # df2 = df: bind the new name to the version the object already has.
+            alias_name, alias_obj = outputs[0]
+            self._bindings[alias_name] = alias_of
+            persisted_names.add(alias_name)
+            stored_now[id(alias_obj)] = alias_of
+            self._track(alias_name, alias_obj)
         for out_name, records in persisted:
             artifact_state_obj = records["artifact_state_obj"]
             self.storage.save_artifact_records_async(
@@ -739,11 +780,15 @@ class RuntimeTracker:
             label = out_name or f"{records['label']}_{artifact_state_obj.artifact_id[:8]}"
             self._bindings[label] = artifact_state_obj.artifact_state_id
             persisted_names.add(label)
+            stored_now[id(records["obj"])] = artifact_state_obj.artifact_state_id
+            self._track(label, records["obj"])
         # A name rebound to something that was not stored must not keep
         # pointing at its previous value.
         for out_name, _ in outputs:
             if out_name and out_name not in persisted_names:
                 self._bindings.pop(out_name, None)
+                self._tracked.pop(out_name, None)
+        self._refresh_tracked(output_state_id, input_state_id, func_name, persisted_names, stored_now, touched)
         # Every state is a complete snapshot of the artifact set: link every
         # OTHER already-known artifact forward to this state too, aliased
         # rather than re-persisted (see _link_untouched_artifacts).
@@ -830,6 +875,7 @@ class RuntimeTracker:
         )
         self._current_state_id = state_id
         self._bindings = self.storage.load_state_bindings(state_id)
+        self._tracked = {}
         self._pending_checkout_state_id = state_id
         self._pending_checkout_branch_name = branch_name
         # active_state_id reflects where the analyst is now — the checkout point.
@@ -991,6 +1037,62 @@ class RuntimeTracker:
         ref = self._registered_refs.get(id(obj))
         return ast_id if ref is not None and ref() is obj else None
 
+    def _track(self, name: str, obj: Any) -> None:
+        """Remember *obj* as what *name* refers to, so later changes to it are noticed."""
+        fingerprint = _fingerprint(obj)
+        if fingerprint is None:
+            self._tracked.pop(name, None)
+            return
+        try:
+            ref: Any = weakref.ref(obj)
+        except TypeError:  # lists, dicts, models: held strongly while the name stays bound
+            ref = lambda o=obj: o  # noqa: E731
+        self._tracked[name] = (ref, fingerprint)
+
+    def _refresh_tracked(self, output_state_id: str, input_state_id: str, func_name: str,
+                         bound_now: set, stored_now: dict, touched: set) -> None:
+        """Version every other bound variable whose object changed during this step.
+
+        A step can change an object through a name it never mentions
+        (``ax.set_title`` changes ``fig``; ``df2['c'] = ...`` changes ``df``).
+        Names sharing an object stored in this step are rebound to that
+        artifact; the rest are compared by fingerprint and stored again if
+        they changed.
+        """
+        for name, (ref, old) in list(self._tracked.items()):
+            if name in bound_now:
+                continue
+            obj = ref()
+            if obj is None:
+                del self._tracked[name]
+                continue
+            try:
+                if id(obj) in stored_now:
+                    self._bindings[name] = stored_now[id(obj)]
+                    self._track(name, obj)
+                    continue
+                if _fingerprint(obj) == old:
+                    continue
+                records = self._persist_output(
+                    obj, node_id=_uid(), input_state_id=input_state_id,
+                    parent_pre={}, parent_frame=None, func_name=func_name,
+                )
+                if not records:
+                    self._bindings.pop(name, None)
+                    del self._tracked[name]
+                    continue
+                state = records["artifact_state_obj"]
+                self.storage.save_artifact_records_async(
+                    records.get("artifact_obj"), state, self._history.history_id
+                )
+                touched.add(state.artifact_id)
+                self._bindings[name] = state.artifact_state_id
+                stored_now[id(obj)] = state.artifact_state_id
+                self._track(name, obj)
+            except Exception as e:
+                log_trace_warning("tracked-object refresh failed",
+                                  step="refresh_tracked", func_name=func_name, name=name, error=e)
+
     def _split_outputs(self, output: Any, names: list[str], named: bool) -> list[tuple[Optional[str], Any]]:
         """Pair a step's result with the names it was bound to."""
         if named:  # a loop block: {name: object}
@@ -1031,6 +1133,7 @@ class RuntimeTracker:
                 return None
             records = self._build_artifact_records(obj, node_id, path, label=label)
             records["label"] = label
+            records["obj"] = obj
             return records if records.get("artifact_state_obj") else None
         except Exception as e:
             log_trace_warning("output artifact persistence failed",

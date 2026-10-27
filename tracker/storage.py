@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS step_categories (category_id VARCHAR PRIMARY KEY, nam
 CREATE TABLE IF NOT EXISTS pruned_views (view_id VARCHAR PRIMARY KEY, history_id VARCHAR NOT NULL, name VARCHAR NOT NULL, created_at VARCHAR NOT NULL, config_json VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS annotations (annotation_id VARCHAR PRIMARY KEY, text VARCHAR NOT NULL, agent_id VARCHAR NOT NULL, created_at VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS annotation_targets (annotation_id VARCHAR NOT NULL, target_type VARCHAR NOT NULL, target_id VARCHAR NOT NULL);
+CREATE TABLE IF NOT EXISTS state_bindings (state_id VARCHAR NOT NULL, name VARCHAR NOT NULL, artifact_state_id VARCHAR NOT NULL, PRIMARY KEY (state_id, name));
 CREATE TABLE IF NOT EXISTS tags (tag_id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL);
 CREATE TABLE IF NOT EXISTS tag_assignments (assignment_id VARCHAR PRIMARY KEY, tag_id VARCHAR NOT NULL, target_type VARCHAR NOT NULL, target_id VARCHAR NOT NULL, created_at VARCHAR NOT NULL);
 """
@@ -221,6 +222,9 @@ class DuckDBSQLiteBackend:
 
     def save_artifact_records_async(self, artifact, artifact_state, history_id) -> None:
         self._executor.submit(self._write_artifact_records, artifact, artifact_state, history_id)
+
+    def save_state_bindings_async(self, state_id: str, bindings: dict) -> None:
+        self._executor.submit(self._write_state_bindings, state_id, dict(bindings))
 
     def save_delta_async(self, delta: dict, step_id: str) -> None:
         self._executor.submit(self._write_delta, delta, step_id)
@@ -1305,6 +1309,18 @@ class DuckDBSQLiteBackend:
         results.sort(key=lambda r: r["origin_timestamp"] or "")
         return results
 
+    def load_state_bindings(self, state_id: str) -> dict[str, str]:
+        """Variable name -> artifact_state_id recorded when *state_id* was created ({} if none)."""
+        con = self._connect(read_only=True)
+        try:
+            rows = con.execute(
+                "SELECT name, artifact_state_id FROM state_bindings WHERE state_id = ?",
+                _p(state_id),
+            ).fetchall()
+        finally:
+            con.close()
+        return {name: artifact_state_id for name, artifact_state_id in rows}
+
     def load_pipeline_by_name(self, name: str) -> Optional[str]:
         """Return the pipeline_id for the first pipeline with the given name, or None."""
         con = self._connect(read_only=True)
@@ -1564,6 +1580,19 @@ class DuckDBSQLiteBackend:
         except Exception as e:
             log_storage_error(e, component="_write_artifact_records",
                               artifact_state_id=artifact_state.artifact_state_id)
+            raise
+        finally:
+            con.close()
+
+    def _write_state_bindings(self, state_id: str, bindings: dict) -> None:
+        con = self._connect()
+        try:
+            for name, artifact_state_id in bindings.items():
+                con.execute("INSERT OR REPLACE INTO state_bindings VALUES (?,?,?)",
+                            _p(state_id, name, artifact_state_id))
+            _commit(con)
+        except Exception as e:
+            log_storage_error(e, component="_write_state_bindings", state_id=state_id)
             raise
         finally:
             con.close()

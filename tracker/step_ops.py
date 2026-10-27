@@ -68,6 +68,17 @@ def value(obj):
 value._provtrack_no_delta = True
 
 
+@_frames_only
+def alias(obj):
+    """Identity: ``df2 = df`` names an existing object a second time."""
+    return obj
+
+
+# An alias adds no data: it binds the name to the artifact the object already has.
+alias._provtrack_alias = True
+alias._provtrack_no_delta = True
+
+
 def block_result(frames: dict) -> dict:
     """What a loop block hands to ``trace_step``: the frames it left behind, as they are."""
     return frames

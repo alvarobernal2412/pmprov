@@ -261,6 +261,12 @@ class ProvTrackTransformer(ast.NodeTransformer):
             ast.fix_missing_locations(stmt)
             return stmt
 
+        # df2 = df: a second name for an object that is already tracked
+        if isinstance(stmt.value, ast.Name) and isinstance(target, ast.Name):
+            stmt.value = self._step_call("alias", raw, args=[stmt.value], targets=[target.id])
+            ast.fix_missing_locations(stmt)
+            return stmt
+
         # x = df['a'] > 3 / x = a & b / x = df.T / x = df[c].dt.date
         if isinstance(stmt.value, (ast.Compare, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Attribute))                 and isinstance(target, ast.Name):
             stmt.value = self._step_call("value", raw, args=[stmt.value], targets=[target.id])
@@ -306,7 +312,7 @@ class ProvTrackTransformer(ast.NodeTransformer):
     _STEP_OPS = {
         "getitem": "getitem", "loc_getitem": "loc_getitem", "iloc_getitem": "iloc_getitem",
         "setitem": "setitem", "loc_setitem": "loc_setitem", "iloc_setitem": "iloc_setitem",
-        "setattr": "setattr_", "block": "block_result", "value": "value",
+        "setattr": "setattr_", "block": "block_result", "value": "value", "alias": "alias",
     }
     # Name recorded for the step (what the history shows), by helper.
     _STEP_NAMES = {

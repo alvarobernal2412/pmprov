@@ -10,11 +10,11 @@ holds and hands them back, optionally injecting them into a namespace.
 """
 from __future__ import annotations
 
-import ast
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
 from tracker.logger import log_trace_warning
+from tracker.runtime import _bound_name as _variable_name
 
 if TYPE_CHECKING:
     from tracker.runtime import RuntimeTracker
@@ -30,17 +30,55 @@ class RestoredState:
     skipped: list[dict] = field(default_factory=list)
 
 
-def _variable_name(raw_line: Optional[str]) -> Optional[str]:
-    """Name bound by a single-target ``name = call(...)`` line, else None."""
-    if not raw_line:
-        return None
+def _load(self: "RuntimeTracker", artifact_state_id: str) -> tuple[Any, str]:
+    reason = "artifact content not found"
     try:
-        node = ast.parse(raw_line.strip()).body[0]
-    except (SyntaxError, IndexError):
-        return None
-    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-        return node.targets[0].id
-    return None
+        obj = self.storage.load_artifact(artifact_state_id)
+    except NotImplementedError as e:
+        obj, reason = None, str(e)
+    return obj, reason
+
+
+def _restore_bound(self: "RuntimeTracker", bindings: dict[str, str],
+                   names: Optional[list[str]], result: RestoredState) -> None:
+    """Exact path: load what each name was bound to when the state was created."""
+    wanted = list(bindings) if names is None else list(dict.fromkeys(names))
+    for name in wanted:
+        if name not in bindings:
+            result.skipped.append({"name": name, "reason": "not bound at this state"})
+            continue
+        obj, reason = _load(self, bindings[name])
+        if obj is None:
+            log_trace_warning("restore_state: artifact skipped", step="restore_state",
+                              artifact_state_id=bindings[name], reason=reason)
+            result.skipped.append({"artifact_state_id": bindings[name], "name": name, "reason": reason})
+            continue
+        result.variables[name] = obj
+
+
+def _restore_legacy(self: "RuntimeTracker", state_id: str, names: Optional[list[str]],
+                    result: RestoredState) -> None:
+    """States recorded before bindings existed: names parsed from raw_line."""
+    arts = [(_variable_name(a["origin_raw_line"]) or a["name"], a)
+            for a in self.storage.load_state_artifacts(state_id)]
+    if names is not None:
+        known = {n for n, _ in arts}
+        result.skipped.extend({"name": n, "reason": "not bound at this state"}
+                              for n in dict.fromkeys(names) if n not in known)
+        arts = [(n, a) for n, a in arts if n in names]
+    loaded: list[tuple[str, str, Any]] = []  # (name, artifact_id, obj), oldest origin first
+    for name, art in arts:
+        obj, reason = _load(self, art["artifact_state_id"])
+        if obj is None:
+            log_trace_warning("restore_state: artifact skipped", step="restore_state",
+                              artifact_id=art["artifact_id"], reason=reason)
+            result.skipped.append({"artifact_id": art["artifact_id"], "name": name, "reason": reason})
+            continue
+        loaded.append((name, art["artifact_id"], obj))
+    for name, artifact_id, obj in loaded:  # oldest origin first, so later ones win
+        if name in result.variables:
+            result.superseded[f"{name}@{artifact_id[:8]}"] = result.variables[name]
+        result.variables[name] = obj
 
 
 def _restore_state(
@@ -49,17 +87,20 @@ def _restore_state(
     *,
     into: Optional[dict] = None,
     checkout: bool = False,
+    names: Optional[list[str]] = None,
 ) -> RestoredState:
     """
-    Load every artifact held by *state_id* (default: the last state of the
-    history by timestamp) and return them keyed by the variable name the
-    analyst assigned them to.
+    Return the variables bound at *state_id* (default: the last state of the
+    history by timestamp), exactly as they were when the state was created.
 
-    Variable names come from the producing step's raw line; unnamed artifacts
-    keep their artifact name. If several artifacts share a name, the most
-    recently produced one is in ``variables`` and the rest in ``superseded``.
-    Artifacts that cannot be loaded are listed in ``skipped``.
+    Names and artifact versions come from the bindings recorded with the
+    state. States recorded before bindings existed fall back to parsing the
+    producing step's raw line (``superseded`` is only filled on that path).
+    Variables that cannot be loaded are listed in ``skipped``.
 
+    names:
+        Load only these variables. Names not bound at the state go to
+        ``skipped`` instead of raising.
     into:
         A dict (e.g. ``globals()``) updated with the variables.
     checkout:
@@ -75,26 +116,11 @@ def _restore_state(
         raise ValueError(f"restore_state: unknown state_id {state_id!r}")
 
     result = RestoredState(state_id=state_id)
-    loaded: list[tuple[str, str, Any]] = []  # (name, artifact_id, obj), oldest origin first
-    for art in self.storage.load_state_artifacts(state_id):
-        name = _variable_name(art["origin_raw_line"]) or art["name"]
-        reason = "artifact content not found"
-        try:
-            obj = self.storage.load_artifact(art["artifact_state_id"])
-        except NotImplementedError as e:
-            obj = None
-            reason = str(e)
-        if obj is None:
-            log_trace_warning("restore_state: artifact skipped", step="restore_state",
-                              artifact_id=art["artifact_id"], reason=reason)
-            result.skipped.append({"artifact_id": art["artifact_id"], "name": name, "reason": reason})
-            continue
-        loaded.append((name, art["artifact_id"], obj))
-
-    for name, artifact_id, obj in loaded:  # oldest origin first, so later ones win
-        if name in result.variables:
-            result.superseded[f"{name}@{artifact_id[:8]}"] = result.variables[name]
-        result.variables[name] = obj
+    bindings = self.storage.load_state_bindings(state_id)
+    if bindings:
+        _restore_bound(self, bindings, names, result)
+    else:
+        _restore_legacy(self, state_id, names, result)
 
     if into is not None:
         into.update(result.variables)

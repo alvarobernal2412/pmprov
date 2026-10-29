@@ -11,7 +11,7 @@ dependencies = [
     "pandas==3.1.0",
     "plotly==7.1.0",
     "pyarrow==26.0.0",
-    "pydantic==2.14.1",
+    "pydantic==2.14.2",
 ]
 
 [project.optional-dependencies]

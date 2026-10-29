@@ -33,7 +33,7 @@ full = ["duckdb==2.0.0", "pyarrow==26.0.0", "networkx==3.7", "matplotlib==3.11.2
 
 [dependency-groups]
 dev = [
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-testmon==2.2.0",
     "pre-commit==4.7.0",
     "networkx==3.7",

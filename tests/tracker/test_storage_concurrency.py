@@ -70,6 +70,10 @@ def test_concurrent_reads_and_writes_do_not_race_on_connection_config(tmp_path):
 
     assert errors == [], f"Concurrent read/write connections raced: {errors[0]}"
 
+    # The writer thread keeps working through the writes queued during the race. Let it finish, so it is not
+    # still opening connections (and using up the one-shot failure the next test injects) when this test ends.
+    storage._executor.submit(lambda: None).result(timeout=60)
+
 
 def test_connect_lock_is_released_when_connect_itself_raises(tmp_path, monkeypatch):
     """
@@ -89,17 +93,27 @@ def test_connect_lock_is_released_when_connect_itself_raises(tmp_path, monkeypat
 
     real_connect = _duckdb.connect
     should_fail = {"value": True}
+    caller = threading.get_ident()
 
     def _flaky_connect(*args, **kwargs):
-        if should_fail["value"]:
+        # only the test's own call fails: a writer thread of another storage in this process connects through
+        # the same patched function and must not use up the failure
+        if should_fail["value"] and threading.get_ident() == caller:
             should_fail["value"] = False
             raise RuntimeError("simulated connect failure")
         return real_connect(*args, **kwargs)
 
     monkeypatch.setattr(_duckdb, "connect", _flaky_connect)
 
-    with pytest.raises(RuntimeError, match="simulated connect failure"):
-        storage._connect()
+    try:
+        with pytest.raises(RuntimeError, match="simulated connect failure"):
+            storage._connect()
+    except BaseException:
+        # if _connect() did not raise it handed out a connection holding the process-wide lock; close it
+        # so one failure here cannot hang every test that follows
+        should_fail["value"] = False
+        storage._connect().close()
+        raise
 
     # If the lock leaked, this call hangs forever — bound it with a thread + join
     # timeout so the test fails loudly instead of hanging the whole suite.

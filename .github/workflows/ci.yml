@@ -9,8 +9,30 @@ on:
       - main
 
 jobs:
+  # One runner per group of test modules, all at once, so a run takes as long as its slowest group instead of the
+  # sum of all of them. `fail-fast` is off so one failing group does not hide the result of the others.
   test:
+    name: test (${{ matrix.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: models
+            args: tests/models
+          - name: requirements
+            args: tests/requirements
+          - name: tracker-storage
+            args: tests/tracker/test_storage*.py
+          - name: tracker-marimo
+            args: tests/tracker/test_marimo*.py tests/tracker/test_kernel_hooks*.py
+          - name: tracker-core
+            args: >-
+              tests/tracker
+              --ignore-glob=tests/tracker/test_storage*
+              --ignore-glob=tests/tracker/test_marimo*
+              --ignore-glob=tests/tracker/test_kernel_hooks*
     steps:
       - name: Checkout ⬇️
         uses: actions/checkout@v7.0.1
@@ -27,11 +49,11 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run tests 🧪
-        run: uv run pytest
+        run: uv run pytest ${{ matrix.args }}
 
   e2e:
     runs-on: ubuntu-latest
-    needs: test
+    timeout-minutes: 15
     steps:
       - name: Checkout ⬇️
         uses: actions/checkout@v7.0.1

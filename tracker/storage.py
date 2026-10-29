@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import json
 import pickle
+import queue
+import time
 import uuid
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import weakref
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -77,6 +80,144 @@ class _LockedConnection:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
+
+
+# Threads blocked waiting for `_connect_lock`. The writer checks it between tasks and lets go of the lock as
+# soon as someone is waiting, so a read is never stuck behind a whole backlog of writes.
+_readers_waiting = 0
+_readers_waiting_lock = threading.Lock()
+
+
+def _acquire_connect_lock() -> None:
+    global _readers_waiting
+    if _connect_lock.acquire(blocking=False):
+        return
+    with _readers_waiting_lock:
+        _readers_waiting += 1
+    try:
+        _connect_lock.acquire()
+    finally:
+        with _readers_waiting_lock:
+            _readers_waiting -= 1
+
+
+class _SessionConnection:
+    """
+    The writer's open connection, handed to the write tasks it runs.
+
+    Every `_write_*` method opens its own connection and closes it when done. While the writer thread runs a batch
+    of tasks they all share one connection instead: `close()` and `commit()` do nothing here, the writer closes
+    the connection (and commits, for SQLite) once the batch is over.
+    """
+
+    __slots__ = ("_con",)
+
+    def __init__(self, con) -> None:
+        object.__setattr__(self, "_con", con)
+
+    def close(self) -> None:
+        pass
+
+    def commit(self) -> None:
+        pass
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+
+# One writer session runs consecutive tasks on one connection for at most this long, so that a synchronous
+# write waiting behind it (an annotation, a tag) is not delayed by a whole backlog.
+_SESSION_SECONDS = 0.25
+_STOP = object()
+
+
+def _run_task(item) -> bool:
+    future, function, args, kwargs = item
+    if not future.set_running_or_notify_cancel():
+        return True
+    try:
+        result = function(*args, **kwargs)
+    except BaseException as exc:  # stored on the future, like ThreadPoolExecutor does
+        future.set_exception(exc)
+        return False
+    future.set_result(result)
+    return True
+
+
+def _writer_main(tasks: "queue.SimpleQueue", backend_ref) -> None:
+    """The writer thread: run queued tasks in sessions that share one connection until told to stop."""
+    while True:
+        item = tasks.get()
+        if item is _STOP:
+            return
+        backend = backend_ref()
+        if backend is None:  # the backend was collected with work still queued; nothing can run it
+            item[0].set_exception(RuntimeError("storage backend was closed"))
+            continue
+        stop = False
+        try:
+            backend._begin_session()
+        except BaseException as exc:
+            if item[0].set_running_or_notify_cancel():
+                item[0].set_exception(exc)
+            continue
+        began = time.monotonic()
+        try:
+            while True:
+                backend._after_task(_run_task(item))
+                if _readers_waiting or time.monotonic() - began > _SESSION_SECONDS:
+                    break
+                try:
+                    item = tasks.get_nowait()
+                except queue.Empty:
+                    break
+                if item is _STOP:
+                    stop = True
+                    break
+        finally:
+            backend._end_session()
+            del backend
+        if stop:
+            return
+        # a reader that was waiting for the lock gets it before the writer takes it again
+        deadline = time.monotonic() + 0.05
+        while _readers_waiting and time.monotonic() < deadline:
+            time.sleep(0.0005)
+
+
+class _WriteExecutor:
+    """The part of `ThreadPoolExecutor` the callers use (`submit`), over the single writer thread."""
+
+    def __init__(self, backend) -> None:
+        self._tasks: "queue.SimpleQueue" = queue.SimpleQueue()
+        self._closed = False
+        self._thread = threading.Thread(
+            target=_writer_main, args=(self._tasks, weakref.ref(backend)), name="provtrack-io_0"
+        )
+        self._thread.start()
+        # an idle writer exits when its backend is collected, and one with work left drains it at interpreter exit
+        weakref.finalize(backend, self._tasks.put, _STOP)
+        threading._register_atexit(self.shutdown)
+
+    def submit(self, function, /, *args, **kwargs) -> Future:
+        if self._closed:
+            raise RuntimeError("cannot schedule new futures after shutdown")
+        future: Future = Future()
+        self._tasks.put((future, function, args, kwargs))
+        return future
+
+    def shutdown(self, wait: bool = True) -> None:
+        if not self._closed:
+            self._closed = True
+            self._tasks.put(_STOP)
+        if wait and self._thread is not threading.current_thread():
+            self._thread.join()
 
 
 # ------------------------------------------------------------------
@@ -162,8 +303,15 @@ class DuckDBSQLiteBackend:
         self.artifact_dir = Path(artifact_dir)
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        # Single-worker executor serialises all writes to the same DB file.
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="provtrack-io")
+        # The writer's open connection while it runs a batch of tasks (see _begin_session).
+        self._session_con = None
+        self._session_thread: int | None = None
+        # Rows waiting to be written together, per table (see _queue_rows).
+        self._pending_rows: dict[str, list] = {}
+        self._pending_lock = threading.Lock()
+        self._flush_queued = False
+        # Single writer thread serialises all writes to the same DB file; consecutive tasks share one connection.
+        self._executor = _WriteExecutor(self)
         # Block until schema is ready before accepting any async writes.
         self._executor.submit(self._init_schema).result()
 
@@ -179,8 +327,10 @@ class DuckDBSQLiteBackend:
         # so wrapping the connection to release the lock on close() requires no
         # changes at any of those call sites.
         del read_only
+        if self._session_con is not None and threading.get_ident() == self._session_thread:
+            return _SessionConnection(self._session_con)  # a write task: share the writer's connection
         if _BACKEND == "duckdb":
-            _connect_lock.acquire()
+            _acquire_connect_lock()
             try:
                 con = _duckdb.connect(str(self.db_path))
             except Exception:
@@ -192,6 +342,69 @@ class DuckDBSQLiteBackend:
                 raise
             return _LockedConnection(con, _connect_lock)
         return _sqlite3.connect(str(self.db_path))
+
+    # ------------------------------------------------------------------
+    # Writer sessions
+    # ------------------------------------------------------------------
+
+    def _begin_session(self) -> None:
+        """Open the connection the writer's next tasks share. DuckDB: holds `_connect_lock` until `_end_session`."""
+        if _BACKEND == "duckdb":
+            _connect_lock.acquire()
+            try:
+                con = _duckdb.connect(str(self.db_path))
+            except Exception:
+                _connect_lock.release()
+                raise
+        else:
+            con = _sqlite3.connect(str(self.db_path))
+        self._session_con = con
+        self._session_thread = threading.get_ident()
+
+    def _after_task(self, succeeded: bool) -> None:
+        """SQLite keeps a transaction open until told otherwise; each task keeps its own all-or-nothing outcome."""
+        if _BACKEND == "sqlite" and self._session_con is not None:
+            (self._session_con.commit if succeeded else self._session_con.rollback)()
+
+    def _end_session(self) -> None:
+        con, self._session_con, self._session_thread = self._session_con, None, None
+        try:
+            if con is not None:
+                con.close()
+        finally:
+            if _BACKEND == "duckdb":
+                _connect_lock.release()
+
+    @staticmethod
+    def _insert_rows(con, table: str, width: int, rows: list) -> None:
+        """INSERT OR REPLACE *rows* with multi-row statements; a statement that fails is retried row by row.
+
+        One bad row must not lose the others it was batched with, so a chunk that fails goes in again one row at
+        a time, the failures are logged and the first error is raised at the end.
+        """
+        if not rows:
+            return
+        per_statement = max(1, 900 // width)
+        marks = "(" + ",".join("?" * width) + ")"
+        first_error: Exception | None = None
+        for start in range(0, len(rows), per_statement):
+            chunk = rows[start:start + per_statement]
+            try:
+                con.execute(
+                    f"INSERT OR REPLACE INTO {table} VALUES " + ",".join([marks] * len(chunk)),
+                    _p(*[value for row in chunk for value in row]),
+                )
+                continue
+            except Exception:
+                pass
+            for row in chunk:
+                try:
+                    con.execute(f"INSERT OR REPLACE INTO {table} VALUES {marks}", _p(*row))
+                except Exception as e:
+                    log_storage_error(e, component=f"_insert_rows({table})", row=str(row[0]))
+                    first_error = first_error or e
+        if first_error is not None:
+            raise first_error
 
     def _init_schema(self) -> None:
         con = self._connect()
@@ -236,13 +449,75 @@ class DuckDBSQLiteBackend:
         self._executor.submit(self._write_env, env, history_id)
 
     def save_param_values_async(self, pvs: list) -> None:
-        self._executor.submit(self._write_param_values, pvs)
+        self._queue_rows("parameter_values", [
+            (pv["parameter_value_id"], pv["step_id"], pv.get("parameter_id", ""), pv["value_type"],
+             json.dumps(pv, default=str))
+            for pv in pvs
+        ])
+
+    # Tables whose rows are queued and written together, in the order they are written, with their column count.
+    _BULK_TABLES = (("artifacts", 4), ("artifact_states", 7), ("state_bindings", 3), ("parameter_values", 5))
+
+    def _queue_rows(self, table: str, rows: list) -> None:
+        """Queue *rows* for *table*; one queued task writes everything that has piled up for the bulk tables.
+
+        A step records an artifact state, a binding and a parameter value per variable, which adds up to tens of
+        thousands of rows. One task and one statement for each of them made the queue take an hour to drain.
+        """
+        with self._pending_lock:
+            self._pending_rows.setdefault(table, []).extend(rows)
+            if self._flush_queued:
+                return
+            self._flush_queued = True
+        self._executor.submit(self._flush_rows)
+
+    # A flush writes at most this many rows per table, so one task stays short enough for a read waiting for
+    # the connection to get its turn; what is left is written by the next flush.
+    _FLUSH_ROWS = 400
+
+    def _flush_rows(self) -> None:
+        with self._pending_lock:
+            pending: dict[str, list] = {}
+            for table, rows in list(self._pending_rows.items()):
+                pending[table], rest = rows[:self._FLUSH_ROWS], rows[self._FLUSH_ROWS:]
+                if rest:
+                    self._pending_rows[table] = rest
+                else:
+                    del self._pending_rows[table]
+            more = bool(self._pending_rows)
+            self._flush_queued = more
+        if more:
+            self._executor.submit(self._flush_rows)
+        if not pending:
+            return
+        con = self._connect()
+        try:
+            for table, width in self._BULK_TABLES:
+                rows = pending.get(table)
+                if not rows:
+                    continue
+                unique = list({row[0] if table in ("artifacts", "artifact_states", "parameter_values") else row[:2]:
+                               row for row in rows}.values())  # the last row queued for a key wins
+                try:
+                    self._insert_rows(con, table, width, unique)
+                except Exception:
+                    pass  # the rows that failed are logged by _insert_rows; the others were written
+            _commit(con)
+        finally:
+            con.close()
 
     def save_artifact_records_async(self, artifact, artifact_state, history_id) -> None:
-        self._executor.submit(self._write_artifact_records, artifact, artifact_state, history_id)
+        if artifact is not None:
+            self._queue_rows("artifacts", [(artifact.artifact_id, history_id, artifact.name,
+                                            artifact.artifact_type.value)])
+        self._queue_rows("artifact_states", [(
+            artifact_state.artifact_state_id, artifact_state.artifact_id, artifact_state.analysis_state_id,
+            artifact_state.mime_type, artifact_state.checksum, artifact_state.content_ref,
+            artifact_state.size_bytes)])
 
     def save_state_bindings_async(self, state_id: str, bindings: dict) -> None:
-        self._executor.submit(self._write_state_bindings, state_id, dict(bindings))
+        self._queue_rows("state_bindings", [(state_id, name, artifact_state_id)
+                                            for name, artifact_state_id in bindings.items()])
 
     def save_delta_async(self, delta: dict, step_id: str) -> None:
         self._executor.submit(self._write_delta, delta, step_id)
@@ -1615,11 +1890,11 @@ class DuckDBSQLiteBackend:
     def _write_param_values(self, pvs: list) -> None:
         con = self._connect()
         try:
-            for pv in pvs:
-                con.execute("INSERT OR REPLACE INTO parameter_values VALUES (?,?,?,?,?)",
-                            _p(pv["parameter_value_id"], pv["step_id"],
-                               pv.get("parameter_id", ""), pv["value_type"],
-                               json.dumps(pv, default=str)))
+            self._insert_rows(con, "parameter_values", 5, [
+                (pv["parameter_value_id"], pv["step_id"], pv.get("parameter_id", ""), pv["value_type"],
+                 json.dumps(pv, default=str))
+                for pv in pvs
+            ])
             _commit(con)
         except Exception as e:
             log_storage_error(e, component="_write_param_values")
@@ -1648,9 +1923,8 @@ class DuckDBSQLiteBackend:
     def _write_state_bindings(self, state_id: str, bindings: dict) -> None:
         con = self._connect()
         try:
-            for name, artifact_state_id in bindings.items():
-                con.execute("INSERT OR REPLACE INTO state_bindings VALUES (?,?,?)",
-                            _p(state_id, name, artifact_state_id))
+            self._insert_rows(con, "state_bindings", 3,
+                              [(state_id, name, artifact_state_id) for name, artifact_state_id in bindings.items()])
             _commit(con)
         except Exception as e:
             log_storage_error(e, component="_write_state_bindings", state_id=state_id)

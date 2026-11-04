@@ -8,7 +8,7 @@ dependencies = [
     "ipywidgets==8.1.9",
     "marimo==0.25.2",
     "matplotlib==3.11.2",
-    "pandas==3.1.0",
+    "pandas==3.1.1",
     "plotly==7.1.0",
     "pyarrow==26.0.0",
     "pydantic==2.14.1",
